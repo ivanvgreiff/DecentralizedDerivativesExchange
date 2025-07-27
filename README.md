@@ -1,4 +1,4 @@
-# 📈 Decentralized Derivatives Exchange (DDX)
+# Decentralized Derivatives Exchange Protocol
 
 **DDX** is a fully on-chain protocol for creating, trading, and settling **customizable options contracts**. Users can define bespoke payoff logic, post collateral, and settle options automatically using decentralized oracles. The protocol supports modular, composable derivatives logic and is optimized for gas efficiency, security, and permissionless usage.
 
