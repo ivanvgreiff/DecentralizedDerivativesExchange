@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "./SimuOracle.sol";
 
 contract OptionContract {
     address public short;
@@ -22,6 +23,10 @@ contract OptionContract {
     bool public isExercised;
     bool public isFunded;
 
+    SimuOracle public oracle;
+    uint256 public priceAtExpiry; // MTK per 2TK from oracle
+    bool public isResolved;
+
     event OptionCreated(
         address indexed short,
         address underlyingToken,
@@ -37,6 +42,7 @@ contract OptionContract {
     event OptionFilled(address indexed long, uint256 premiumPaid, uint256 expiry);
     event OptionExercised(address indexed long, uint256 mtkSpent, uint256 twoTkReceived);
     event OptionExpiredUnused(address indexed short);
+    event PriceResolved(uint256 priceAtExpiry);
 
     constructor(
         address _underlyingToken,
@@ -45,10 +51,12 @@ contract OptionContract {
         string memory _strikeSymbol,
         uint256 _strikePrice,
         uint256 _optionSize,
-        uint256 _premium
+        uint256 _premium,
+        address _oracle
     ) {
         require(_strikePrice > 0, "Invalid strike price");
         require(_optionSize > 0, "Invalid option size");
+        require(_oracle != address(0), "Invalid oracle");
 
         short = msg.sender;
         underlyingToken = IERC20(_underlyingToken);
@@ -60,6 +68,8 @@ contract OptionContract {
         strikePrice = _strikePrice;
         optionSize = _optionSize;
         premium = _premium;
+
+        oracle = SimuOracle(_oracle);
 
         emit OptionCreated(
             short,
@@ -110,15 +120,32 @@ contract OptionContract {
         emit OptionFilled(long, premium, expiry);
     }
 
+    /// @notice Resolve price from oracle after expiry
+    function resolve() public {
+        require(block.timestamp >= expiry, "Too early to resolve");
+        require(!isResolved, "Already resolved");
+
+        uint256 derivedPrice = oracle.getDerivedPriceBySymbols(underlyingSymbol, strikeSymbol);
+        require(derivedPrice > 0, "Oracle price unavailable");
+
+        priceAtExpiry = derivedPrice;
+        isResolved = true;
+
+        emit PriceResolved(derivedPrice);
+    }
+
     function getMaxSpendableMTK() external view returns (uint256) {
         return (optionSize * strikePrice) / 1e18;
     }
 
+    /// @notice Exercise option if market price > strike price
     function exercise(uint256 mtkAmount) external {
         require(msg.sender == long, "Only long can exercise");
         require(block.timestamp >= expiry, "Not yet expired");
         require(!isExercised, "Already exercised");
         require(mtkAmount > 0, "Must spend more than 0");
+        require(isResolved, "Price not resolved");
+        require(priceAtExpiry > strikePrice, "Option not profitable");
 
         uint256 twoTkAmount = (mtkAmount * 1e18) / strikePrice;
         require(twoTkAmount <= optionSize, "Too much requested");
@@ -143,6 +170,7 @@ contract OptionContract {
         emit OptionExercised(long, mtkAmount, twoTkAmount);
     }
 
+    /// @notice Short reclaims tokens if not exercised
     function reclaim() external {
         require(block.timestamp >= expiry, "Too early");
         require(!isExercised, "Already exercised");
