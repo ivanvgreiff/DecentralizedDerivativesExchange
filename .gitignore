@@ -1,3 +1,13 @@
+.gitignore
+.gitmodules
+.env
+foundry.toml
+package-lock.json
+package.json
+flattened_*.sol
+node_modules
+broadcast/
+
 # Compiler files
 cache/
 out/

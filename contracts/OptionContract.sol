@@ -83,7 +83,6 @@ contract OptionContract {
         );
     }
 
-    /// @notice Short deposits 2TK after deployment
     function fund() external {
         require(msg.sender == short, "Only short can fund");
         require(!isFunded, "Already funded");
@@ -105,7 +104,7 @@ contract OptionContract {
 
         long = msg.sender;
         isFilled = true;
-        expiry = block.timestamp + 30 minutes;
+        expiry = block.timestamp + 5 minutes;
 
         require(
             strikeToken.transferFrom(long, address(this), premium),
@@ -120,31 +119,21 @@ contract OptionContract {
         emit OptionFilled(long, premium, expiry);
     }
 
-    /// @notice Resolve price from oracle after expiry
-    function resolve() public {
-        require(block.timestamp >= expiry, "Too early to resolve");
-        require(!isResolved, "Already resolved");
-
-        uint256 derivedPrice = oracle.getDerivedPriceBySymbols(underlyingSymbol, strikeSymbol);
-        require(derivedPrice > 0, "Oracle price unavailable");
-
-        priceAtExpiry = derivedPrice;
-        isResolved = true;
-
-        emit PriceResolved(derivedPrice);
-    }
-
     function getMaxSpendableMTK() external view returns (uint256) {
         return (optionSize * strikePrice) / 1e18;
     }
 
-    /// @notice Exercise option if market price > strike price
     function exercise(uint256 mtkAmount) external {
         require(msg.sender == long, "Only long can exercise");
         require(block.timestamp >= expiry, "Not yet expired");
         require(!isExercised, "Already exercised");
         require(mtkAmount > 0, "Must spend more than 0");
-        require(isResolved, "Price not resolved");
+
+        // Resolve oracle price if not already resolved
+        if (!isResolved) {
+            _resolve();
+        }
+
         require(priceAtExpiry > strikePrice, "Option not profitable");
 
         uint256 twoTkAmount = (mtkAmount * 1e18) / strikePrice;
@@ -170,7 +159,6 @@ contract OptionContract {
         emit OptionExercised(long, mtkAmount, twoTkAmount);
     }
 
-    /// @notice Short reclaims tokens if not exercised
     function reclaim() external {
         require(block.timestamp >= expiry, "Too early");
         require(!isExercised, "Already exercised");
@@ -185,5 +173,19 @@ contract OptionContract {
         );
 
         emit OptionExpiredUnused(short);
+    }
+
+    /// @notice Internal price resolution from oracle
+    function _resolve() internal {
+        require(block.timestamp >= expiry, "Too early to resolve");
+        require(!isResolved, "Already resolved");
+
+        uint256 derivedPrice = oracle.getDerivedPriceBySymbols(underlyingSymbol, strikeSymbol);
+        require(derivedPrice > 0, "Oracle price unavailable");
+
+        priceAtExpiry = derivedPrice;
+        isResolved = true;
+
+        emit PriceResolved(derivedPrice);
     }
 }
