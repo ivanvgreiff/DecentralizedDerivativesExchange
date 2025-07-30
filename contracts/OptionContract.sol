@@ -42,7 +42,14 @@ contract OptionContract {
     event OptionFilled(address indexed long, uint256 premiumPaid, uint256 expiry);
     event OptionExercised(address indexed long, uint256 mtkSpent, uint256 twoTkReceived);
     event OptionExpiredUnused(address indexed short);
-    event PriceResolved(uint256 priceAtExpiry);
+
+    // 🔄 Updated: Emit underlying + strike symbol + resolved price + timestamp
+    event PriceResolved(
+        string underlyingSymbol,
+        string strikeSymbol,
+        uint256 priceAtExpiry,
+        uint256 resolvedAt
+    );
 
     constructor(
         address _underlyingToken,
@@ -123,17 +130,26 @@ contract OptionContract {
         return (optionSize * strikePrice) / 1e18;
     }
 
+    /// @notice Resolve oracle price manually after expiry
+    function resolve() public {
+        require(block.timestamp >= expiry, "Too early to resolve");
+        require(!isResolved, "Already resolved");
+
+        uint256 derivedPrice = oracle.getDerivedPriceBySymbols(underlyingSymbol, strikeSymbol);
+        require(derivedPrice > 0, "Oracle price unavailable");
+
+        priceAtExpiry = derivedPrice;
+        isResolved = true;
+
+        emit PriceResolved(underlyingSymbol, strikeSymbol, derivedPrice, block.timestamp);
+    }
+
     function exercise(uint256 mtkAmount) external {
         require(msg.sender == long, "Only long can exercise");
         require(block.timestamp >= expiry, "Not yet expired");
         require(!isExercised, "Already exercised");
+        require(isResolved, "Price not yet resolved");
         require(mtkAmount > 0, "Must spend more than 0");
-
-        // Resolve oracle price if not already resolved
-        if (!isResolved) {
-            _resolve();
-        }
-
         require(priceAtExpiry > strikePrice, "Option not profitable");
 
         uint256 twoTkAmount = (mtkAmount * 1e18) / strikePrice;
@@ -173,19 +189,5 @@ contract OptionContract {
         );
 
         emit OptionExpiredUnused(short);
-    }
-
-    /// @notice Internal price resolution from oracle
-    function _resolve() internal {
-        require(block.timestamp >= expiry, "Too early to resolve");
-        require(!isResolved, "Already resolved");
-
-        uint256 derivedPrice = oracle.getDerivedPriceBySymbols(underlyingSymbol, strikeSymbol);
-        require(derivedPrice > 0, "Oracle price unavailable");
-
-        priceAtExpiry = derivedPrice;
-        isResolved = true;
-
-        emit PriceResolved(derivedPrice);
     }
 }

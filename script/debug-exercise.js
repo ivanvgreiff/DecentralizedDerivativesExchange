@@ -1,21 +1,21 @@
 require("dotenv").config();
 const { ethers } = require("ethers");
 
-const ABI = require("../contract-utils/OptionContractABI.json");
+const OPTION_ABI = require("../contract-utils/OptionContractABI.json");
 const MTK_ABI = require("../contract-utils/MTKContractABI.json")
-const CONTRACT_ADDRESS = "0x2D9BbC370d9113A37873e4a3096d143D7EB93A14";
+const OPTION_ADDRESS = "0x3dE2E6c1Ea958D76CC1d7d5D56237836Fa4807ec";
 const MTK_ADDRESS = "0x2d03f1019f2B5e42F8361087640b11791D68fb0d";
 
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
 const signer = new ethers.Wallet(process.env.PRIVATE_KEY_TS1, provider);
-const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+const contract = new ethers.Contract(OPTION_ADDRESS, OPTION_ABI, signer);
 
 async function debugExercise() {
   try {
     const mtkAmount = ethers.parseUnits("7", 18); // Adjust as needed
 
     const mtkToken = new ethers.Contract(MTK_ADDRESS, MTK_ABI, signer);
-    await mtkToken.approve(CONTRACT_ADDRESS, ethers.parseUnits("7", 18));
+    await mtkToken.approve(OPTION_ADDRESS, ethers.parseUnits("7", 18));
 
     console.log("Approved")
 
