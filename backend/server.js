@@ -56,6 +56,62 @@ app.post('/api/contracts/register-top', async (req, res) => {
   }
 });
 
+// WORKING SINGLE CONTRACT ROUTE AT THE TOP
+app.get('/api/contracts/:contractAddress/details', async (req, res) => {
+  console.log('TOP CONTRACT DETAILS ROUTE HIT!');
+  try {
+    const { contractAddress } = req.params;
+    
+    if (!resolutionService) {
+      return res.status(500).json({ error: 'Resolution service not initialized' });
+    }
+    
+    const contract = await resolutionService.db.getContract(contractAddress);
+    
+    if (!contract) {
+      return res.status(404).json({ error: 'Contract not found in database' });
+    }
+    
+    // Transform the data to ensure proper conditional fields
+    const transformedContract = {
+      contractAddress: contract.address,
+      short: contract.short_address,
+      long: contract.long_address || '0x0000000000000000000000000000000000000000',
+      underlyingToken: contract.underlying_token,
+      strikeToken: contract.strike_token,
+      underlyingSymbol: contract.underlying_symbol,
+      strikeSymbol: contract.strike_symbol,
+      strikePrice: contract.strike_price,
+      optionSize: contract.option_size,
+      premium: contract.premium,
+      oracle: contract.oracle_address,
+      expiry: contract.expiry,
+      isFunded: Boolean(contract.is_funded),
+      isFilled: Boolean(contract.is_filled),
+      isResolved: Boolean(contract.is_resolved),
+      isExercised: Boolean(contract.is_exercised),
+      // Only include price at expiry if resolved AND expired
+      priceAtExpiry: (contract.is_resolved && contract.expiry && contract.expiry * 1000 < Date.now()) 
+        ? contract.price_at_expiry 
+        : null,
+      status: contract.status,
+      createdAt: contract.created_at,
+      fundedAt: contract.funded_at,
+      filledAt: contract.filled_at,
+      resolvedAt: contract.resolved_at,
+      exercisedAt: contract.exercised_at
+    };
+    
+    res.json({ contract: transformedContract });
+  } catch (error) {
+    console.error('Error fetching contract details:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch contract details',
+      details: error.message 
+    });
+  }
+});
+
 // MOVE CONTRACTS ROUTE TO THE TOP FOR TESTING
 app.get('/api/contracts/all-top', async (req, res) => {
   console.log('TOP CONTRACTS ROUTE HIT!');
@@ -92,6 +148,43 @@ app.post('/api/admin/resolve-expired-top', async (req, res) => {
   } catch (error) {
     console.error('Manual resolution error:', error);
     res.status(500).json({ error: 'Failed to run resolution check' });
+  }
+});
+
+// FIX DATA INTEGRITY FOR EXERCISED CONTRACTS
+app.post('/api/admin/fix-exercised-data', async (req, res) => {
+  console.log('FIXING EXERCISED DATA INTEGRITY');
+  try {
+    if (!resolutionService) {
+      return res.status(500).json({ error: 'Resolution service not initialized' });
+    }
+    
+    // Find all contracts that are marked as exercised but don't have exercised_at timestamp
+    const contracts = await resolutionService.db.getAllContracts();
+    let fixedCount = 0;
+    
+    for (const contract of contracts) {
+      if (contract.is_exercised && !contract.exercised_at) {
+        console.log(`Fixing exercised_at for contract ${contract.address}`);
+        
+        // Set exercised_at to the resolved_at time (best guess) or current time
+        const exercisedAt = contract.resolved_at || new Date().toISOString();
+        
+        await resolutionService.db.updateContract(contract.address, {
+          exercised_at: exercisedAt
+        });
+        
+        fixedCount++;
+      }
+    }
+    
+    res.json({ 
+      success: true, 
+      message: `Fixed exercised_at timestamps for ${fixedCount} contracts`
+    });
+  } catch (error) {
+    console.error('Error fixing exercised data:', error);
+    res.status(500).json({ error: 'Failed to fix exercised data' });
   }
 });
 
@@ -193,15 +286,147 @@ const OptionContractABI = require('../contract-utils/OptionContractABI.json');
 const SimuOracleABI = require('../contract-utils/SimuOracleABI.json');
 const MTKABI = require('../contract-utils/MTKContractABI.json');
 const TwoTKABI = require('../contract-utils/TwoTKContractABI.json');
-const OptionMultiCallABI = require('../contract-utils/OptionMultiCallABI.json');
 
-// MultiCall contract address from environment
-const ENTER_AND_APPROVE = process.env.ENTER_AND_APPROVE;
+// OptionsBook ABI for factory pattern
+const OptionsBookABI = [
+  'function createAndFundCallOption(address _underlyingToken, address _strikeToken, string memory _underlyingSymbol, string memory _strikeSymbol, uint256 _strikePrice, uint256 _optionSize, uint256 _premium, address _oracle) external returns (address)',
+  'function createAndFundPutOption(address _underlyingToken, address _strikeToken, string memory _underlyingSymbol, string memory _strikeSymbol, uint256 _strikePrice, uint256 _optionSize, uint256 _premium, address _oracle) external returns (address)',
+  'function getAllCallOptions() external view returns (address[] memory)',
+  'function getAllPutOptions() external view returns (address[] memory)'
+];
 
-// Check if ENTER_AND_APPROVE is configured
-if (!ENTER_AND_APPROVE) {
-  console.warn('⚠️ ENTER_AND_APPROVE environment variable not set - bundled transactions will not work');
+// Contract addresses from environment (NO FALLBACKS - MUST BE IN .env)
+const OPTIONSBOOK_ADDRESS = process.env.OPTIONS_BOOK;
+const CALL_IMPL_ADDRESS = process.env.CALL_OPTION_IMPL;
+const PUT_IMPL_ADDRESS = process.env.PUT_OPTION_IMPL;
+
+// Validate that all required addresses are provided
+if (!OPTIONSBOOK_ADDRESS) {
+  console.error('❌ OPTIONS_BOOK not found in environment variables');
+  process.exit(1);
 }
+if (!CALL_IMPL_ADDRESS) {
+  console.error('❌ CALL_OPTION_IMPL not found in environment variables');
+  process.exit(1);
+}
+if (!PUT_IMPL_ADDRESS) {
+  console.error('❌ PUT_OPTION_IMPL not found in environment variables');
+  process.exit(1);
+}
+
+console.log('✅ Contract addresses loaded from .env:');
+console.log('  OPTIONS_BOOK:', OPTIONSBOOK_ADDRESS);
+console.log('  CALL_OPTION_IMPL:', CALL_IMPL_ADDRESS);
+console.log('  PUT_OPTION_IMPL:', PUT_IMPL_ADDRESS);
+
+// Query current OptionsBook factory for all actual contracts
+app.get('/api/factory/all-contracts', async (req, res) => {
+  try {
+    console.log('🔍 Factory endpoint called');
+    console.log('Provider available:', !!provider);
+    console.log('OptionsBook address:', OPTIONSBOOK_ADDRESS);
+    
+    if (!provider) {
+      return res.status(500).json({ error: 'Provider not initialized' });
+    }
+    
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    console.log('OptionsBook contract created');
+    
+    // Get all call and put options from the CURRENT factory
+    console.log('Calling getAllCallOptions...');
+    const callOptions = await optionsBookContract.getAllCallOptions();
+    console.log('Call options:', callOptions);
+    
+    console.log('Calling getAllPutOptions...');
+    const putOptions = await optionsBookContract.getAllPutOptions();
+    console.log('Put options:', putOptions);
+    
+    // Get detailed info for each contract from current factory
+    const allContracts = [];
+    
+    for (const address of callOptions) {
+      try {
+        const optionContract = new ethers.Contract(address, OptionContractABI, provider);
+        const [short, long, isFunded, isFilled, isExercised, isResolved, expiry, strikePrice, optionSize, premium] = await Promise.all([
+          optionContract.short(),
+          optionContract.long(),
+          optionContract.isFunded(),
+          optionContract.isFilled(),
+          optionContract.isExercised(),
+          optionContract.isResolved(),
+          optionContract.expiry(),
+          optionContract.strikePrice(),
+          optionContract.optionSize(),
+          optionContract.premium()
+        ]);
+        
+        allContracts.push({
+          address,
+          type: 'call',
+          short,
+          long,
+          isFunded,
+          isFilled,
+          isExercised,
+          isResolved,
+          expiry: expiry.toString(),
+          strikePrice: strikePrice.toString(),
+          optionSize: optionSize.toString(),
+          premium: premium.toString()
+        });
+      } catch (error) {
+        console.error(`Error querying call option ${address}:`, error.message);
+      }
+    }
+    
+    for (const address of putOptions) {
+      try {
+        const optionContract = new ethers.Contract(address, OptionContractABI, provider);
+        const [short, long, isFunded, isFilled, isExercised, isResolved, expiry, strikePrice, optionSize, premium] = await Promise.all([
+          optionContract.short(),
+          optionContract.long(),
+          optionContract.isFunded(),
+          optionContract.isFilled(),
+          optionContract.isExercised(),
+          optionContract.isResolved(),
+          optionContract.expiry(),
+          optionContract.strikePrice(),
+          optionContract.optionSize(),
+          optionContract.premium()
+        ]);
+        
+        allContracts.push({
+          address,
+          type: 'put',
+          short,
+          long,
+          isFunded,
+          isFilled,
+          isExercised,
+          isResolved,
+          expiry: expiry.toString(),
+          strikePrice: strikePrice.toString(),
+          optionSize: optionSize.toString(),
+          premium: premium.toString()
+        });
+      } catch (error) {
+        console.error(`Error querying put option ${address}:`, error.message);
+      }
+    }
+    
+    res.json({ 
+      optionsBookAddress: OPTIONSBOOK_ADDRESS,
+      callOptionsCount: callOptions.length,
+      putOptionsCount: putOptions.length,
+      contracts: allContracts
+    });
+  } catch (error) {
+    console.error('Error querying factory contracts:', error);
+    res.status(500).json({ error: 'Failed to query factory contracts' });
+  }
+});
+
 
 // New resolution service with database
 const ResolutionService = require('./resolutionService');
@@ -367,10 +592,9 @@ app.get('/api/option/:contractAddress', async (req, res) => {
   }
 });
 
-// Create option contract with bundled approve + create transactions
-app.post('/api/option/create', async (req, res) => {
+// Create call option using OptionsBook factory
+app.post('/api/option/create-call', async (req, res) => {
   try {
-    // Check if provider is initialized
     if (!provider) {
       return res.status(500).json({ 
         error: 'Blockchain provider not initialized',
@@ -387,10 +611,9 @@ app.post('/api/option/create', async (req, res) => {
       optionSize,
       premium,
       oracle,
-      userAddress // Frontend needs to provide the user's address
+      userAddress
     } = req.body;
     
-    // Validate required fields
     if (!underlyingToken || !strikeToken || !oracle || !userAddress) {
       return res.status(400).json({ 
         error: 'Missing required contract addresses or user address' 
@@ -398,72 +621,137 @@ app.post('/api/option/create', async (req, res) => {
     }
     
     const optionSizeWei = ethers.parseUnits(optionSize.toString(), 18);
+    const strikePriceWei = ethers.parseUnits(strikePrice.toString(), 18);
+    const premiumWei = ethers.parseUnits(premium.toString(), 18);
     
-    // Create contract factory for deployment
-    const compiledContract = require('../out/OptionContract.sol/OptionContract.json');
-    const contractFactory = new ethers.ContractFactory(
-      OptionContractABI,
-      compiledContract.bytecode.object,
-      provider
-    );
+    // Create OptionsBook contract instance
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
     
-    // Get the deployment transaction data (bytecode + constructor)
-    const deployTx = await contractFactory.getDeployTransaction(
+    // For call options, user needs to approve underlying token (2TK) to OptionsBook
+    const tokenContract = new ethers.Contract(underlyingToken, TwoTKABI, provider);
+    
+    // Prepare approve transaction data
+    const approveData = tokenContract.interface.encodeFunctionData('approve', [OPTIONSBOOK_ADDRESS, optionSizeWei]);
+    
+    // Prepare createAndFundCallOption transaction data
+    const createData = optionsBookContract.interface.encodeFunctionData('createAndFundCallOption', [
       underlyingToken,
       strikeToken,
       underlyingSymbol,
       strikeSymbol,
-      ethers.parseUnits(strikePrice.toString(), 18),
+      strikePriceWei,
       optionSizeWei,
-      ethers.parseUnits(premium.toString(), 18),
+      premiumWei,
       oracle
-    );
+    ]);
     
-    // Predict the contract address that will be deployed
-    // We need the user's current nonce to predict the address
-    const userNonce = await provider.getTransactionCount(userAddress);
-    const predictedAddress = ethers.getCreateAddress({
-      from: userAddress,
-      nonce: userNonce + 1 // +1 because first tx will be approve, second will be deploy
-    });
-    
-    // Create ERC20 contract instance for the underlying token to prepare approve transaction
-    // Underlying token is usually 2TK, but use a standard ERC20 ABI
-    const tokenABI = TwoTKABI; // Both token contracts should have standard ERC20 interface
-    
-    const tokenContract = new ethers.Contract(underlyingToken, tokenABI, provider);
-    
-    // Prepare approve transaction data for the predicted contract address
-    const approveData = tokenContract.interface.encodeFunctionData('approve', [predictedAddress, optionSizeWei]);
-    
-    // Return both transactions for the frontend to execute sequentially
     res.json({
       success: true,
-      message: 'Approve + Create Option transactions prepared for MetaMask signing',
+      message: 'Call option transactions prepared for MetaMask signing',
       data: {
-        transactions: [
-          {
-            to: underlyingToken,
-            data: approveData,
-            value: '0x0',
-            description: 'Approve tokens for option contract'
-          },
-          {
-            to: null, // Contract creation
-            data: deployTx.data,
-            value: '0x0',
-            description: 'Create option contract'
-          }
-        ],
-        predictedAddress,
-        optionSize: optionSizeWei.toString()
+        approveTransaction: {
+          to: underlyingToken,
+          data: approveData,
+          value: '0x0'
+        },
+        createTransaction: {
+          to: OPTIONSBOOK_ADDRESS,
+          data: createData,
+          value: '0x0'
+        },
+        tokenToApprove: underlyingToken,
+        amountToApprove: optionSizeWei.toString(),
+        optionsBookAddress: OPTIONSBOOK_ADDRESS
       }
     });
   } catch (error) {
-    console.error('Error creating option:', error);
-    console.error('Error details:', error.message);
+    console.error('Error creating call option:', error);
     res.status(500).json({ 
-      error: 'Failed to create option contract',
+      error: 'Failed to create call option contract',
+      details: error.message 
+    });
+  }
+});
+
+// Create put option using OptionsBook factory
+app.post('/api/option/create-put', async (req, res) => {
+  try {
+    if (!provider) {
+      return res.status(500).json({ 
+        error: 'Blockchain provider not initialized',
+        details: 'The server could not connect to the blockchain network'
+      });
+    }
+
+    const {
+      underlyingToken,
+      strikeToken,
+      underlyingSymbol,
+      strikeSymbol,
+      strikePrice,
+      optionSize,
+      premium,
+      oracle,
+      userAddress
+    } = req.body;
+    
+    if (!underlyingToken || !strikeToken || !oracle || !userAddress) {
+      return res.status(400).json({ 
+        error: 'Missing required contract addresses or user address' 
+      });
+    }
+    
+    const optionSizeWei = ethers.parseUnits(optionSize.toString(), 18);
+    const strikePriceWei = ethers.parseUnits(strikePrice.toString(), 18);
+    const premiumWei = ethers.parseUnits(premium.toString(), 18);
+    
+    // For put options, user needs to deposit strike tokens (MTK) = (optionSize * strikePrice) / 1e18
+    const mtkToSend = (optionSizeWei * strikePriceWei) / ethers.parseUnits('1', 18);
+    
+    // Create OptionsBook contract instance
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    
+    // For put options, user needs to approve strike token (MTK) to OptionsBook
+    const tokenContract = new ethers.Contract(strikeToken, MTKABI, provider);
+    
+    // Prepare approve transaction data
+    const approveData = tokenContract.interface.encodeFunctionData('approve', [OPTIONSBOOK_ADDRESS, mtkToSend]);
+    
+    // Prepare createAndFundPutOption transaction data
+    const createData = optionsBookContract.interface.encodeFunctionData('createAndFundPutOption', [
+      underlyingToken,
+      strikeToken,
+      underlyingSymbol,
+      strikeSymbol,
+      strikePriceWei,
+      optionSizeWei,
+      premiumWei,
+      oracle
+    ]);
+    
+    res.json({
+      success: true,
+      message: 'Put option transactions prepared for MetaMask signing',
+      data: {
+        approveTransaction: {
+          to: strikeToken,
+          data: approveData,
+          value: '0x0'
+        },
+        createTransaction: {
+          to: OPTIONSBOOK_ADDRESS,
+          data: createData,
+          value: '0x0'
+        },
+        tokenToApprove: strikeToken,
+        amountToApprove: mtkToSend.toString(),
+        optionsBookAddress: OPTIONSBOOK_ADDRESS
+      }
+    });
+  } catch (error) {
+    console.error('Error creating put option:', error);
+    res.status(500).json({ 
+      error: 'Failed to create put option contract',
       details: error.message 
     });
   }
@@ -493,7 +781,7 @@ app.post('/api/option/:contractAddress/fund', async (req, res) => {
   }
 });
 
-// Enter as long (buy option) using MultiCall contract for single transaction
+// Enter as long (buy option) - simple direct contract call
 app.post('/api/option/:contractAddress/enter', async (req, res) => {
   try {
     const { contractAddress } = req.params;
@@ -503,14 +791,6 @@ app.post('/api/option/:contractAddress/enter', async (req, res) => {
       return res.status(400).json({ 
         error: 'Invalid contract address format',
         address: contractAddress 
-      });
-    }
-    
-    // Check if ENTER_AND_APPROVE is configured
-    if (!ENTER_AND_APPROVE) {
-      return res.status(500).json({
-        error: 'ENTER_AND_APPROVE environment variable not configured',
-        details: 'The MultiCall contract address is not set in environment variables'
       });
     }
     
@@ -524,25 +804,31 @@ app.post('/api/option/:contractAddress/enter', async (req, res) => {
     console.log('Strike token:', strikeToken);
     console.log('Premium:', premium.toString());
     
-    // Create MultiCall contract instance
-    const multiCallContract = new ethers.Contract(ENTER_AND_APPROVE, OptionMultiCallABI, provider);
+    // Prepare approve transaction data
+    const tokenContract = new ethers.Contract(strikeToken, MTKABI, provider);
+    const approveData = tokenContract.interface.encodeFunctionData('approve', [contractAddress, premium]);
     
-    // Prepare MultiCall transaction data
-    const multiCallData = multiCallContract.interface.encodeFunctionData('approveAndEnterAsLong', [
-      strikeToken,
-      contractAddress,
-      premium
-    ]);
+    // Prepare enterAsLong transaction data
+    const enterData = optionContract.interface.encodeFunctionData('enterAsLong');
     
-    // Return single transaction for the frontend to execute
+    // Return both transactions for the frontend to execute separately
     res.json({
       success: true,
-      message: 'Single MultiCall transaction prepared for MetaMask signing',
+      message: 'Enter as long transactions prepared for MetaMask signing',
       data: {
-        to: ENTER_AND_APPROVE,
-        data: multiCallData,
-        value: '0x0',
-        description: 'Approve premium and enter as long position (bundled)'
+        approveTransaction: {
+          to: strikeToken,
+          data: approveData,
+          value: '0x0'
+        },
+        enterTransaction: {
+          to: contractAddress,
+          data: enterData,
+          value: '0x0'
+        },
+        premiumToken: strikeToken,
+        premiumAmount: premium.toString(),
+        contractAddress: contractAddress
       }
     });
   } catch (error) {
@@ -577,19 +863,11 @@ app.post('/api/option/:contractAddress/resolve', async (req, res) => {
   }
 });
 
-// Exercise option using MultiCall contract for single transaction
+// Exercise option - simple direct contract call
 app.post('/api/option/:contractAddress/exercise', async (req, res) => {
   try {
     const { contractAddress } = req.params;
     const { mtkAmount } = req.body;
-    
-    // Check if ENTER_AND_APPROVE is configured
-    if (!ENTER_AND_APPROVE) {
-      return res.status(500).json({
-        error: 'ENTER_AND_APPROVE environment variable not configured',
-        details: 'The MultiCall contract address is not set in environment variables'
-      });
-    }
     
     console.log('Processing exercise request for contract:', contractAddress);
     console.log('MTK amount to spend:', mtkAmount);
@@ -605,25 +883,31 @@ app.post('/api/option/:contractAddress/exercise', async (req, res) => {
     console.log('Strike token:', strikeToken);
     console.log('MTK amount (wei):', mtkAmountWei.toString());
     
-    // Create MultiCall contract instance
-    const multiCallContract = new ethers.Contract(ENTER_AND_APPROVE, OptionMultiCallABI, provider);
+    // Prepare approve transaction data
+    const tokenContract = new ethers.Contract(strikeToken, MTKABI, provider);
+    const approveData = tokenContract.interface.encodeFunctionData('approve', [contractAddress, mtkAmountWei]);
     
-    // Prepare MultiCall transaction data for approveAndExercise
-    const multiCallData = multiCallContract.interface.encodeFunctionData('approveAndExercise', [
-      strikeToken,
-      contractAddress,
-      mtkAmountWei
-    ]);
+    // Prepare exercise transaction data
+    const exerciseData = optionContract.interface.encodeFunctionData('exercise', [mtkAmountWei]);
     
-    // Return single transaction for the frontend to execute
+    // Return both transactions for the frontend to execute separately
     res.json({
       success: true,
-      message: 'Single MultiCall exercise transaction prepared for MetaMask signing',
+      message: 'Exercise transactions prepared for MetaMask signing',
       data: {
-        to: ENTER_AND_APPROVE,
-        data: multiCallData,
-        value: '0x0',
-        description: 'Approve MTK and exercise option (bundled)'
+        approveTransaction: {
+          to: strikeToken,
+          data: approveData,
+          value: '0x0'
+        },
+        exerciseTransaction: {
+          to: contractAddress,
+          data: exerciseData,
+          value: '0x0'
+        },
+        strikeToken: strikeToken,
+        mtkAmount: mtkAmountWei.toString(),
+        contractAddress: contractAddress
       }
     });
   } catch (error) {
@@ -691,7 +975,7 @@ app.get('/api/admin/resolution-status', (req, res) => {
 
 // Fund contract endpoint - now triggers database update
 
-// Register new contract in database
+// Register new contract in database (called after OptionsBook creation)
 app.post('/api/contracts/register', async (req, res) => {
   try {
     if (!resolutionService) {
@@ -715,6 +999,62 @@ app.post('/api/contracts/register', async (req, res) => {
   } catch (error) {
     console.error('Contract registration error:', error);
     res.status(500).json({ error: 'Failed to register contract' });
+  }
+});
+
+// Auto-register newly created contracts from OptionsBook transactions
+app.post('/api/contracts/auto-register', async (req, res) => {
+  try {
+    if (!resolutionService) {
+      return res.status(500).json({ error: 'Resolution service not initialized' });
+    }
+    
+    const { 
+      transactionHash,
+      contractAddress,
+      optionType,
+      shortAddress,
+      underlyingToken,
+      strikeToken,
+      underlyingSymbol,
+      strikeSymbol,
+      strikePrice,
+      optionSize,
+      premium,
+      oracle
+    } = req.body;
+    
+    // Prepare contract data for database
+    const contractData = {
+      address: contractAddress,
+      short_address: shortAddress,
+      underlying_token: underlyingToken,
+      strike_token: strikeToken,
+      underlying_symbol: underlyingSymbol,
+      strike_symbol: strikeSymbol,
+      strike_price: strikePrice,
+      option_size: optionSize,
+      premium: premium,
+      oracle_address: oracle,
+      option_type: optionType,
+      is_funded: true, // Created via OptionsBook, so automatically funded
+      transaction_hash: transactionHash,
+      created_at: new Date().toISOString(),
+      funded_at: new Date().toISOString()
+    };
+    
+    await resolutionService.addContract(contractData);
+    
+    console.log(`✅ Auto-registered ${optionType} option contract: ${contractAddress}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Contract auto-registered successfully',
+      address: contractAddress
+    });
+  } catch (error) {
+    console.error('Auto-registration error:', error);
+    res.status(500).json({ error: 'Failed to auto-register contract' });
   }
 });
 
@@ -787,20 +1127,50 @@ app.get('/api/contracts/simple', (req, res) => {
   res.json({ contracts: [] });
 });
 
-// Get all contracts from database
+// Get all contracts from database (MUST come before /:contractAddress route)
 app.get('/api/contracts/all', async (req, res) => {
   console.log('GET /api/contracts/all - Request received');
   console.log('Resolution service available:', !!resolutionService);
   
   try {
-    // SIMPLIFIED: Just return empty array for now
-    console.log('Returning empty contracts for debugging');
-    res.json({ contracts: [] });
+    if (!resolutionService) {
+      console.log('Resolution service not ready, returning empty array');
+      return res.json({ contracts: [] });
+    }
+    
+    const contracts = await resolutionService.db.getAllContracts();
+    console.log('Found contracts in database:', contracts.length);
+    res.json({ contracts });
   } catch (error) {
     console.error('Error fetching contracts:', error);
     console.error('Error stack:', error.stack);
     res.status(500).json({ 
       error: 'Failed to fetch contracts',
+      details: error.message 
+    });
+  }
+});
+
+// Get specific contract from database
+app.get('/api/contracts/:contractAddress', async (req, res) => {
+  try {
+    const { contractAddress } = req.params;
+    
+    if (!resolutionService) {
+      return res.status(500).json({ error: 'Resolution service not initialized' });
+    }
+    
+    const contract = await resolutionService.db.getContract(contractAddress);
+    
+    if (!contract) {
+      return res.status(404).json({ error: 'Contract not found in database' });
+    }
+    
+    res.json({ contract });
+  } catch (error) {
+    console.error('Error fetching contract:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch contract',
       details: error.message 
     });
   }
