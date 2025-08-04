@@ -1,7 +1,7 @@
 require("dotenv").config();
 const { ethers } = require("ethers");
 
-const OPTION_ABI = require("../contract-utils/OptionContractABI.json");
+const OPTION_ABI = require("../contract-utils/CallOptionContractABI.json");
 const MTK_ABI = require("../contract-utils/MTKContractABI.json")
 const OPTION_ADDRESS = "0x3dE2E6c1Ea958D76CC1d7d5D56237836Fa4807ec";
 const MTK_ADDRESS = "0x2d03f1019f2B5e42F8361087640b11791D68fb0d";

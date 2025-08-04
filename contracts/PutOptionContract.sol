@@ -4,12 +4,12 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./SimuOracle.sol";
 
-contract OptionContract {
+contract PutOptionContract {
     address public short;
     address public long;
 
-    IERC20 public underlyingToken; // 2TK - asset to be bought
-    IERC20 public strikeToken;     // MTK - asset to be paid with
+    IERC20 public underlyingToken; // 2TK - asset to be sold
+    IERC20 public strikeToken;     // MTK - asset to be received
 
     string public underlyingSymbol;
     string public strikeSymbol;
@@ -24,8 +24,10 @@ contract OptionContract {
     bool public isFunded;
 
     SimuOracle public oracle;
-    uint256 public priceAtExpiry; // MTK per 2TK from oracle
+    uint256 public priceAtExpiry;
     bool public isResolved;
+
+    uint256 private _exercisedVolume; // ✅ Volume in MTK
 
     event OptionCreated(
         address indexed short,
@@ -40,10 +42,8 @@ contract OptionContract {
 
     event ShortFunded(address indexed short, uint256 amount);
     event OptionFilled(address indexed long, uint256 premiumPaid, uint256 expiry);
-    event OptionExercised(address indexed long, uint256 mtkSpent, uint256 twoTkReceived);
+    event OptionExercised(address indexed long, uint256 twoTkSold, uint256 mtkReceived);
     event OptionExpiredUnused(address indexed short);
-
-    // 🔄 Updated: Emit underlying + strike symbol + resolved price + timestamp
     event PriceResolved(
         string underlyingSymbol,
         string strikeSymbol,
@@ -96,12 +96,13 @@ contract OptionContract {
 
         isFunded = true;
 
+        uint256 totalStrike = (optionSize * strikePrice) / 1e18;
         require(
-            underlyingToken.transferFrom(msg.sender, address(this), optionSize),
-            "2TK deposit failed"
+            strikeToken.transferFrom(msg.sender, address(this), totalStrike),
+            "MTK deposit failed"
         );
 
-        emit ShortFunded(msg.sender, optionSize);
+        emit ShortFunded(msg.sender, totalStrike);
     }
 
     function enterAsLong() external {
@@ -126,11 +127,10 @@ contract OptionContract {
         emit OptionFilled(long, premium, expiry);
     }
 
-    function getMaxSpendableMTK() external view returns (uint256) {
+    function getMaxReceivableMTK() external view returns (uint256) {
         return (optionSize * strikePrice) / 1e18;
     }
 
-    /// @notice Resolve oracle price manually after expiry
     function resolve() public {
         require(block.timestamp >= expiry, "Too early to resolve");
         require(!isResolved, "Already resolved");
@@ -144,35 +144,40 @@ contract OptionContract {
         emit PriceResolved(underlyingSymbol, strikeSymbol, derivedPrice, block.timestamp);
     }
 
-    function exercise(uint256 mtkAmount) external {
+    function exercise(uint256 twoTkAmount) external {
         require(msg.sender == long, "Only long can exercise");
         require(block.timestamp >= expiry, "Not yet expired");
         require(!isExercised, "Already exercised");
         require(isResolved, "Price not yet resolved");
-        require(mtkAmount > 0, "Must spend more than 0");
-        require(priceAtExpiry > strikePrice, "Option not profitable");
-
-        uint256 twoTkAmount = (mtkAmount * 1e18) / strikePrice;
+        require(twoTkAmount > 0, "Must sell more than 0");
         require(twoTkAmount <= optionSize, "Too much requested");
+        require(priceAtExpiry < strikePrice, "Option not profitable");
 
         isExercised = true;
 
-        require(
-            strikeToken.transferFrom(long, address(this), mtkAmount),
-            "MTK transfer failed"
-        );
+        uint256 mtkAmount = (twoTkAmount * strikePrice) / 1e18;
+        _exercisedVolume = mtkAmount; // ✅ track MTK volume transferred
 
         require(
-            strikeToken.transfer(short, mtkAmount),
-            "MTK forwarding failed"
-        );
-
-        require(
-            underlyingToken.transfer(long, twoTkAmount),
+            underlyingToken.transferFrom(long, address(this), twoTkAmount),
             "2TK transfer failed"
         );
 
-        emit OptionExercised(long, mtkAmount, twoTkAmount);
+        require(
+            underlyingToken.transfer(short, twoTkAmount),
+            "2TK forwarding failed"
+        );
+
+        require(
+            strikeToken.transfer(long, mtkAmount),
+            "MTK payout failed"
+        );
+
+        emit OptionExercised(long, twoTkAmount, mtkAmount);
+    }
+
+    function exercisedVolume() public view returns (uint256) {
+        return _exercisedVolume;
     }
 
     function reclaim() external {
@@ -183,9 +188,10 @@ contract OptionContract {
 
         isExercised = true;
 
+        uint256 totalStrike = (optionSize * strikePrice) / 1e18;
         require(
-            underlyingToken.transfer(short, optionSize),
-            "2TK reclaim failed"
+            strikeToken.transfer(short, totalStrike),
+            "MTK reclaim failed"
         );
 
         emit OptionExpiredUnused(short);
