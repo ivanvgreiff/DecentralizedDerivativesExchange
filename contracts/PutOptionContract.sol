@@ -78,18 +78,25 @@ contract PutOptionContract {
         emit ShortFunded(short, mtkAmount);
     }
 
-    function enterAsLong() external {
+    function enterAsLong(address realLong) external {
         require(!isFilled, "Already filled");
-        require(isFunded, "Not funded");
+        require(isFunded, "Not funded yet");
 
-        long = msg.sender;
+        long = realLong;
         isFilled = true;
         expiry = block.timestamp + 5 minutes;
 
-        require(strikeToken.transferFrom(long, address(this), premium), "Premium transfer failed");
-        require(strikeToken.transfer(short, premium), "Premium forwarding failed");
+        require(
+            strikeToken.transferFrom(realLong, address(this), premium),
+            "Premium transfer failed"
+        );
 
-        emit OptionFilled(long, premium, expiry);
+        require(
+            strikeToken.transfer(short, premium),
+            "Premium forwarding failed"
+        );
+
+        emit OptionFilled(realLong, premium, expiry);
     }
 
     function resolve() public {

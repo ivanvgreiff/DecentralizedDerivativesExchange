@@ -98,6 +98,15 @@ contract OptionsBook {
         emit OptionCreated(msg.sender, clone, "PUT");
     }
 
+    function enterAndPayPremium(
+        address optionAddress
+    ) external {
+        (bool success, ) = optionAddress.call(
+            abi.encodeWithSignature("enterAsLong(address)", msg.sender)
+        );
+        require(success, "enterAsLong failed");
+    }
+
     function notifyExercised(uint256 strikeTokenAmount) external {
         require(isKnownOption(msg.sender), "Unknown option contract");
         require(!isExercised[msg.sender], "Already marked exercised");

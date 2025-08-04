@@ -77,18 +77,27 @@ contract CallOptionContract {
         emit ShortFunded(short, optionSize);
     }
 
-    function enterAsLong() external {
+    // Enter position and Pay
+    function enterAsLong(address realLong) external {
         require(!isFilled, "Already filled");
         require(isFunded, "Not funded yet");
+        require(long == address(0), "Already entered");
 
-        long = msg.sender;
+        long = realLong;
         isFilled = true;
         expiry = block.timestamp + 5 minutes;
 
-        require(strikeToken.transferFrom(long, address(this), premium), "Premium failed");
-        require(strikeToken.transfer(short, premium), "Premium forward failed");
+        require(
+            strikeToken.transferFrom(realLong, address(this), premium),
+            "Premium transfer failed"
+        );
 
-        emit OptionFilled(long, premium, expiry);
+        require(
+            strikeToken.transfer(short, premium),
+            "Premium forwarding failed"
+        );
+
+        emit OptionFilled(realLong, premium, expiry);
     }
 
     function resolve() public {
