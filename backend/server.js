@@ -4,13 +4,13 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const { ethers } = require('ethers');
-require('dotenv').config();
+require('dotenv').config({ path: '../.env' });
 
 // Simple in-memory cache for factory contracts
 const factoryCache = {
   data: null,
   timestamp: 0,
-  ttl: 30000 // 30 seconds cache
+  ttl: 60000 // 60 seconds cache
 };
 
 const app = express();
@@ -63,57 +63,93 @@ app.post('/api/contracts/register-top', async (req, res) => {
   }
 });
 
-// WORKING SINGLE CONTRACT ROUTE AT THE TOP
+// CONTRACT DETAILS - BLOCKCHAIN ONLY
 app.get('/api/contracts/:contractAddress/details', async (req, res) => {
-  console.log('TOP CONTRACT DETAILS ROUTE HIT!');
+  console.log('CONTRACT DETAILS ROUTE - BLOCKCHAIN ONLY');
   try {
     const { contractAddress } = req.params;
     
-    if (!resolutionService) {
-      return res.status(500).json({ error: 'Resolution service not initialized' });
+    if (!provider) {
+      return res.status(500).json({ error: 'Blockchain provider not initialized' });
     }
     
-    const contract = await resolutionService.db.getContract(contractAddress);
+    console.log('🔍 Fetching contract details from blockchain for:', contractAddress);
     
-    if (!contract) {
-      return res.status(404).json({ error: 'Contract not found in database' });
-    }
+    const { abi: contractABI } = await getContractTypeAndABI(contractAddress);
+    console.log('📋 Contract ABI determined');
     
-    // Transform the data to ensure proper conditional fields
+    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
+    console.log('📄 Option contract instance created');
+    
+    const [
+      short,
+      long,
+      underlyingToken,
+      strikeToken,
+      underlyingSymbol,
+      strikeSymbol,
+      strikePrice,
+      optionSize,
+      premium,
+      expiry,
+      isActive,
+      isExercised,
+      isFunded,
+      oracle,
+      priceAtExpiry,
+      isResolved,
+      optionType,
+      oracleAddress
+    ] = await Promise.all([
+      optionContract.short(),
+      optionContract.long(),
+      optionContract.underlyingToken(),
+      optionContract.strikeToken(),
+      optionContract.underlyingSymbol(),
+      optionContract.strikeSymbol(),
+      optionContract.strikePrice(),
+      optionContract.optionSize(),
+      optionContract.premium(),
+      optionContract.expiry(),
+      optionContract.isActive(),
+      optionContract.isExercised(),
+      optionContract.isFunded(),
+      optionContract.oracle(),
+      optionContract.priceAtExpiry(),
+      optionContract.isResolved(),
+      optionContract.optionType(),
+      optionContract.getOracleAddress()
+    ]);
+    
+    console.log('✅ All contract data fetched successfully from blockchain');
+    
     const transformedContract = {
-      contractAddress: contract.address,
-      short: contract.short_address,
-      long: contract.long_address || '0x0000000000000000000000000000000000000000',
-      underlyingToken: contract.underlying_token,
-      strikeToken: contract.strike_token,
-      underlyingSymbol: contract.underlying_symbol,
-      strikeSymbol: contract.strike_symbol,
-      strikePrice: contract.strike_price,
-      optionSize: contract.option_size,
-      premium: contract.premium,
-      oracle: contract.oracle_address,
-      expiry: contract.expiry,
-      isFunded: Boolean(contract.is_funded),
-      isFilled: Boolean(contract.is_filled),
-      isResolved: Boolean(contract.is_resolved),
-      isExercised: Boolean(contract.is_exercised),
-      // Only include price at expiry if resolved AND expired
-      priceAtExpiry: (contract.is_resolved && contract.expiry && contract.expiry * 1000 < Date.now()) 
-        ? contract.price_at_expiry 
-        : null,
-      status: contract.status,
-      createdAt: contract.created_at,
-      fundedAt: contract.funded_at,
-      filledAt: contract.filled_at,
-      resolvedAt: contract.resolved_at,
-      exercisedAt: contract.exercised_at
+      contractAddress,
+      short,
+      long,
+      underlyingToken,
+      strikeToken,
+      underlyingSymbol,
+      strikeSymbol,
+      strikePrice: strikePrice.toString(),
+      optionSize: optionSize.toString(),
+      premium: premium.toString(),
+      oracle: oracleAddress,
+      optionsBook: OPTIONSBOOK_ADDRESS,
+      expiry: expiry.toString(),
+      isFunded,
+      isActive,
+      isResolved,
+      isExercised,
+      priceAtExpiry: priceAtExpiry.toString(),
+      optionType
     };
     
     res.json({ contract: transformedContract });
   } catch (error) {
-    console.error('Error fetching contract details:', error);
+    console.error('❌ Error fetching contract details from blockchain:', error);
     res.status(500).json({ 
-      error: 'Failed to fetch contract details',
+      error: 'Failed to fetch contract details from blockchain',
       details: error.message 
     });
   }
@@ -214,20 +250,20 @@ app.post('/api/admin/sync-database-top', async (req, res) => {
         // Get on-chain state
         const { abi: contractABI } = await getContractTypeAndABI(contract.address);
         const optionContract = new ethers.Contract(contract.address, contractABI, provider);
-        const [isFilled, isResolved, isExercised, long, expiry, priceAtExpiry] = await Promise.all([
-          optionContract.isFilled(),
-          optionContract.isResolved(),
-          optionContract.isExercised(),
-          optionContract.long(),
-          optionContract.expiry(),
-          optionContract.priceAtExpiry()
-        ]);
+            const [isActive, isResolved, isExercised, long, expiry, priceAtExpiry] = await Promise.all([
+      optionContract.isActive(),
+      optionContract.isResolved(),
+      optionContract.isExercised(),
+      optionContract.long(),
+      optionContract.expiry(),
+      optionContract.priceAtExpiry()
+    ]);
         
         // Update database if state differs
         const updates = {};
-        if (isFilled !== Boolean(contract.is_filled)) {
-          updates.is_filled = isFilled ? 1 : 0;
-          if (isFilled && !contract.long_address) {
+        if (isActive !== Boolean(contract.is_filled)) {
+          updates.is_filled = isActive ? 1 : 0;
+          if (isActive && !contract.long_address) {
             updates.long_address = long;
             updates.expiry = expiry.toString();
             updates.filled_at = new Date().toISOString();
@@ -292,9 +328,34 @@ async function initializeBlockchain() {
 // Contract ABIs (you'll need to import these from your compiled contracts)
 const CallOptionContractABI = require('../contract-utils/CallOptionContractABI.json');
 const PutOptionContractABI = require('../contract-utils/PutOptionContractABI.json');
+const OptionsBookABI = require('../contract-utils/OptionsBookABI.json');
 const SimuOracleABI = require('../contract-utils/SimuOracleABI.json');
 const MTKABI = require('../contract-utils/MTKContractABI.json');
 const TwoTKABI = require('../contract-utils/TwoTKContractABI.json');
+
+// Utility function to add delay
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Retry function with exponential backoff
+async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      const isRateLimitError = error.message.includes('Too Many Requests') || 
+                              error.message.includes('-32005') ||
+                              error.code === 'BAD_DATA';
+      
+      if (isRateLimitError && attempt < maxRetries) {
+        const delayMs = baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
+        console.log(`⏳ Rate limit hit, retrying in ${delayMs}ms (attempt ${attempt}/${maxRetries})`);
+        await delay(delayMs);
+        continue;
+      }
+      throw error;
+    }
+  }
+}
 
 // Helper function to determine contract type and get appropriate ABI
 async function getContractTypeAndABI(contractAddress) {
@@ -323,15 +384,6 @@ async function getContractTypeAndABI(contractAddress) {
     return { type: 'call', abi: CallOptionContractABI };
   }
 }
-
-// OptionsBook ABI for factory pattern
-const OptionsBookABI = [
-  'function createAndFundCallOption(address _underlyingToken, address _strikeToken, string memory _underlyingSymbol, string memory _strikeSymbol, uint256 _strikePrice, uint256 _optionSize, uint256 _premium, address _oracle) external returns (address)',
-  'function createAndFundPutOption(address _underlyingToken, address _strikeToken, string memory _underlyingSymbol, string memory _strikeSymbol, uint256 _strikePrice, uint256 _optionSize, uint256 _premium, address _oracle) external returns (address)',
-  'function getAllCallOptions() external view returns (address[] memory)',
-  'function getAllPutOptions() external view returns (address[] memory)',
-  'function isCallOption(address option) external view returns (bool)'
-];
 
 // Contract addresses from environment (NO FALLBACKS - MUST BE IN .env)
 const OPTIONSBOOK_ADDRESS = process.env.OPTIONS_BOOK;
@@ -391,25 +443,37 @@ app.get('/api/factory/all-contracts', async (req, res) => {
     // Get detailed info for each contract from current factory
     const allContracts = [];
     
-    for (const address of callOptions) {
+    for (let i = 0; i < callOptions.length; i++) {
+      const address = callOptions[i];
       try {
+        // Add delay between contract queries to avoid rate limits
+        if (i > 0) {
+          // Removed delay since RPC calls now have retry mechanism with backoff
+        }
+        
         const optionContract = new ethers.Contract(address, CallOptionContractABI, provider);
-        const [short, long, isFunded, isFilled, isExercised, isResolved, expiry, strikePrice, optionSize, premium, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol] = await Promise.all([
-          optionContract.short(),
-          optionContract.long(),
-          optionContract.isFunded(),
-          optionContract.isFilled(),
-          optionContract.isExercised(),
-          optionContract.isResolved(),
-          optionContract.expiry(),
-          optionContract.strikePrice(),
-          optionContract.optionSize(),
-          optionContract.premium(),
-          optionContract.underlyingToken(),
-          optionContract.strikeToken(),
-          optionContract.underlyingSymbol(),
-          optionContract.strikeSymbol()
-        ]);
+        
+        // Use retry logic for blockchain calls
+        const contractData = await retryWithBackoff(async () => {
+          return Promise.all([
+            optionContract.short(),
+            optionContract.long(),
+            optionContract.isFunded(),
+            optionContract.isActive(),
+            optionContract.isExercised(),
+            optionContract.isResolved(),
+            optionContract.expiry(),
+            optionContract.strikePrice(),
+            optionContract.optionSize(),
+            optionContract.premium(),
+            optionContract.underlyingToken(),
+            optionContract.strikeToken(),
+            optionContract.underlyingSymbol(),
+            optionContract.strikeSymbol()
+          ]);
+        });
+        
+        const [short, long, isFunded, isActive, isExercised, isResolved, expiry, strikePrice, optionSize, premium, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol] = contractData;
         
         allContracts.push({
           address,
@@ -417,7 +481,7 @@ app.get('/api/factory/all-contracts', async (req, res) => {
           short,
           long,
           isFunded,
-          isFilled,
+          isActive,
           isExercised,
           isResolved,
           expiry: expiry.toString(),
@@ -434,25 +498,37 @@ app.get('/api/factory/all-contracts', async (req, res) => {
       }
     }
     
-    for (const address of putOptions) {
+    for (let i = 0; i < putOptions.length; i++) {
+      const address = putOptions[i];
       try {
+        // Add delay between contract queries to avoid rate limits
+        if (i > 0 || callOptions.length > 0) {
+          // Removed delay since RPC calls now have retry mechanism with backoff
+        }
+        
         const optionContract = new ethers.Contract(address, PutOptionContractABI, provider);
-        const [short, long, isFunded, isFilled, isExercised, isResolved, expiry, strikePrice, optionSize, premium, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol] = await Promise.all([
-          optionContract.short(),
-          optionContract.long(),
-          optionContract.isFunded(),
-          optionContract.isFilled(),
-          optionContract.isExercised(),
-          optionContract.isResolved(),
-          optionContract.expiry(),
-          optionContract.strikePrice(),
-          optionContract.optionSize(),
-          optionContract.premium(),
-          optionContract.underlyingToken(),
-          optionContract.strikeToken(),
-          optionContract.underlyingSymbol(),
-          optionContract.strikeSymbol()
-        ]);
+        
+        // Use retry logic for blockchain calls
+        const contractData = await retryWithBackoff(async () => {
+          return Promise.all([
+            optionContract.short(),
+            optionContract.long(),
+            optionContract.isFunded(),
+            optionContract.isActive(),
+            optionContract.isExercised(),
+            optionContract.isResolved(),
+            optionContract.expiry(),
+            optionContract.strikePrice(),
+            optionContract.optionSize(),
+            optionContract.premium(),
+            optionContract.underlyingToken(),
+            optionContract.strikeToken(),
+            optionContract.underlyingSymbol(),
+            optionContract.strikeSymbol()
+          ]);
+        });
+        
+        const [short, long, isFunded, isActive, isExercised, isResolved, expiry, strikePrice, optionSize, premium, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol] = contractData;
         
         allContracts.push({
           address,
@@ -460,7 +536,7 @@ app.get('/api/factory/all-contracts', async (req, res) => {
           short,
           long,
           isFunded,
-          isFilled,
+          isActive,
           isExercised,
           isResolved,
           expiry: expiry.toString(),
@@ -556,9 +632,13 @@ app.get('/api/token/:tokenAddress/balance/:userAddress', async (req, res) => {
   try {
     const { tokenAddress, userAddress } = req.params;
     const tokenContract = new ethers.Contract(tokenAddress, MTKABI, provider);
-    const balance = await tokenContract.balanceOf(userAddress);
-    const symbol = await tokenContract.symbol();
-    const decimals = await tokenContract.decimals();
+    
+    // Bundle 3 RPC calls into single batch to reduce network requests
+    const [balance, symbol, decimals] = await Promise.all([
+      tokenContract.balanceOf(userAddress),
+      tokenContract.symbol(),
+      tokenContract.decimals()
+    ]);
     
     res.json({
       tokenAddress,
@@ -583,18 +663,40 @@ app.get('/api/oracle/prices', async (req, res) => {
     const oracleContract = new ethers.Contract(oracleAddress, SimuOracleABI, provider);
     const tokenCount = await oracleContract.getTokenCount();
     
-    const prices = [];
+    // Bundle all RPC calls to reduce from N+1 calls to 2 batch calls
+    console.log(`🔍 Bundling ${tokenCount * 2} oracle RPC calls into 2 batches...`);
+    
+    const tokenAddressPromises = [];
     for (let i = 0; i < tokenCount; i++) {
-      const tokenAddress = await oracleContract.getTokenAt(i);
-      const [realPrice, price1e18, lastUpdated, symbol] = await oracleContract.getPrice(tokenAddress);
+      tokenAddressPromises.push(oracleContract.getTokenAt(i));
+    }
+    
+    const tokenAddresses = await Promise.all(tokenAddressPromises);
+    
+    const priceDataPromises = tokenAddresses.map(tokenAddress => 
+      oracleContract.getPrice(tokenAddress)
+    );
+    
+    const priceDataResults = await Promise.all(priceDataPromises);
+    
+    const prices = [];
+    for (let i = 0; i < tokenAddresses.length; i++) {
+      const tokenAddress = tokenAddresses[i];
+      const [realPrice, price1e18, lastUpdated, symbol] = priceDataResults[i];
+      
       prices.push({
         tokenAddress,
         symbol,
         realPrice: realPrice.toString(),
         price1e18: price1e18.toString(),
-        lastUpdated: lastUpdated.toString()
+        lastUpdated: lastUpdated.toString(),
+        priceFormatted: ethers.formatUnits(price1e18, 18),
+        lastUpdatedDate: new Date(parseInt(lastUpdated.toString()) * 1000).toISOString(),
+        timestamp: Date.now()
       });
     }
+    
+    console.log(`✅ Oracle prices fetched in 2 batched calls instead of ${tokenCount * 2 + 1} sequential calls`);
     
     res.json({ prices });
   } catch (error) {
@@ -657,43 +759,96 @@ app.get('/api/option/:contractAddress', async (req, res) => {
     const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
     console.log('📄 Option contract instance created');
     
-    const [
-      short,
-      long,
-      underlyingToken,
-      strikeToken,
-      underlyingSymbol,
-      strikeSymbol,
-      strikePrice,
-      optionSize,
-      premium,
-      expiry,
-      isFilled,
-      isExercised,
-      isFunded,
-      oracle,
-      priceAtExpiry,
-      isResolved
-    ] = await Promise.all([
-      optionContract.short(),
-      optionContract.long(),
-      optionContract.underlyingToken(),
-      optionContract.strikeToken(),
-      optionContract.underlyingSymbol(),
-      optionContract.strikeSymbol(),
-      optionContract.strikePrice(),
-      optionContract.optionSize(),
-      optionContract.premium(),
-      optionContract.expiry(),
-      optionContract.isFilled(),
-      optionContract.isExercised(),
-      optionContract.isFunded(),
-      optionContract.oracle(),
-      optionContract.priceAtExpiry(),
-      optionContract.isResolved()
-    ]);
+    // Try to fetch basic contract info first to check if contract is accessible
+    try {
+      console.log('🔍 Testing contract accessibility...');
+      await optionContract.short();
+      console.log('✅ Contract is accessible');
+    } catch (accessError) {
+      console.error('❌ Contract is not accessible:', accessError.message);
+      return res.status(404).json({ 
+        error: 'Contract not found or not accessible',
+        details: 'The contract address does not exist or is not a valid option contract'
+      });
+    }
     
-    console.log('✅ All contract data fetched successfully');
+    // Fetch ALL contract data in a single batched RPC call to reduce network requests from 18 to 1
+    console.log('🔍 Fetching all contract data in single batch...');
+    
+    // Retry function with exponential backoff for rate limit errors
+    const fetchWithRetry = async (retryCount = 0) => {
+      try {
+        return await Promise.all([
+          // Basic contract data (6 calls)
+          optionContract.short(),
+          optionContract.long(),
+          optionContract.underlyingToken(),
+          optionContract.strikeToken(),
+          optionContract.underlyingSymbol(),
+          optionContract.strikeSymbol(),
+          // Option parameters (4 calls)
+          optionContract.strikePrice(),
+          optionContract.optionSize(),
+          optionContract.premium(),
+          optionContract.expiry(),
+          // Option state (4 calls)
+          optionContract.isActive(),
+          optionContract.isExercised(),
+          optionContract.isFunded(),
+          optionContract.isResolved(),
+          // Oracle data (4 calls)
+          optionContract.oracle(),
+          optionContract.priceAtExpiry(),
+          optionContract.optionType(),
+          optionContract.getOracleAddress()
+        ]);
+      } catch (error) {
+        // Check if it's a rate limit error (-32005) and we haven't exceeded max retries
+        if ((error.message.includes('Too Many Requests') || error.code === -32005) && retryCount < 3) {
+          const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 10000); // Max 10 seconds
+          console.log(`⏳ Rate limited, retrying in ${backoffDelay}ms (attempt ${retryCount + 1}/3)...`);
+          
+          await new Promise(resolve => setTimeout(resolve, backoffDelay));
+          return fetchWithRetry(retryCount + 1);
+        }
+        throw error;
+      }
+    };
+    
+    let short, long, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol;
+    let strikePrice, optionSize, premium, expiry, isActive, isExercised, isFunded;
+    let isResolved, oracle, priceAtExpiry, optionType, oracleAddress;
+    
+    try {
+      [
+        short,
+        long,
+        underlyingToken,
+        strikeToken,
+        underlyingSymbol,
+        strikeSymbol,
+        strikePrice,
+        optionSize,
+        premium,
+        expiry,
+        isActive,
+        isExercised,
+        isFunded,
+        isResolved,
+        oracle,
+        priceAtExpiry,
+        optionType,
+        oracleAddress
+      ] = await fetchWithRetry();
+    
+      console.log('✅ All contract data fetched successfully in single batch');
+    } catch (error) {
+      console.error('❌ Error fetching contract data in batch after retries:', error.message);
+      return res.status(500).json({ 
+        error: 'Failed to fetch contract data',
+        details: error.message 
+      });
+    }
     
     res.json({
       contractAddress,
@@ -707,12 +862,14 @@ app.get('/api/option/:contractAddress', async (req, res) => {
       optionSize: optionSize.toString(),
       premium: premium.toString(),
       expiry: expiry.toString(),
-      isFilled,
+      isActive,
       isExercised,
       isFunded,
-      oracle,
+      oracle: oracleAddress,
+      optionsBook: OPTIONSBOOK_ADDRESS,
       priceAtExpiry: priceAtExpiry.toString(),
-      isResolved
+      isResolved,
+      optionType
     });
   } catch (error) {
     console.error('❌ Error fetching option details:', error);
@@ -932,19 +1089,22 @@ app.post('/api/option/:contractAddress/enter', async (req, res) => {
     const { abi: contractABI } = await getContractTypeAndABI(contractAddress);
     const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
     
-    // Get contract details to determine strike token and premium
-    const strikeToken = await optionContract.strikeToken();
-    const premium = await optionContract.premium();
+    // Bundle contract detail calls to reduce RPC requests
+    const [strikeToken, premium] = await Promise.all([
+      optionContract.strikeToken(),
+      optionContract.premium()
+    ]);
     
     console.log('Strike token:', strikeToken);
     console.log('Premium:', premium.toString());
     
-    // Prepare approve transaction data
+    // Prepare approve transaction data (approve OptionsBook to spend premium)
     const tokenContract = new ethers.Contract(strikeToken, MTKABI, provider);
-    const approveData = tokenContract.interface.encodeFunctionData('approve', [contractAddress, premium]);
+    const approveData = tokenContract.interface.encodeFunctionData('approve', [OPTIONSBOOK_ADDRESS, premium]);
     
-    // Prepare enterAsLong transaction data
-    const enterData = optionContract.interface.encodeFunctionData('enterAsLong', [req.body.userAddress || req.body.from]);
+    // Prepare enterAndPayPremium transaction data (call OptionsBook, not individual contract)
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    const enterData = optionsBookContract.interface.encodeFunctionData('enterAndPayPremium', [contractAddress]);
     
     // Return both transactions for the frontend to execute separately
     res.json({
@@ -957,13 +1117,13 @@ app.post('/api/option/:contractAddress/enter', async (req, res) => {
           value: '0x0'
         },
         enterTransaction: {
-          to: contractAddress,
+          to: OPTIONSBOOK_ADDRESS,
           data: enterData,
           value: '0x0'
         },
         premiumToken: strikeToken,
         premiumAmount: premium.toString(),
-        contractAddress: contractAddress
+        optionsBookAddress: OPTIONSBOOK_ADDRESS
       }
     });
   } catch (error) {
@@ -1086,23 +1246,39 @@ app.post('/api/option/:contractAddress/resolveAndExercise', async (req, res) => 
     const { abi: contractABI, type: contractType } = await getContractTypeAndABI(contractAddress);
     const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
     
-    // Get option state for debugging
-    const [long, isFilled, isExercised, isResolved, expiry, strikePrice, priceAtExpiry] = await Promise.all([
-      optionContract.long(),
-      optionContract.isFilled(),
-      optionContract.isExercised(),
-      optionContract.isResolved(),
-      optionContract.expiry(),
-      optionContract.strikePrice(),
-      optionContract.priceAtExpiry()
-    ]);
+    // Get option state for debugging with retry mechanism
+    const fetchContractDataWithRetry = async (retryCount = 0) => {
+      try {
+        return await Promise.all([
+          optionContract.long(),
+          optionContract.isActive(),
+          optionContract.isExercised(),
+          optionContract.isResolved(),
+          optionContract.expiry(),
+          optionContract.strikePrice(),
+          optionContract.priceAtExpiry()
+        ]);
+      } catch (error) {
+        // Check if it's a rate limit error (-32005) and we haven't exceeded max retries
+        if ((error.message.includes('Too Many Requests') || error.code === -32005) && retryCount < 3) {
+          const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 10000); // Max 10 seconds
+          console.log(`⏳ Rate limited in resolveAndExercise, retrying in ${backoffDelay}ms (attempt ${retryCount + 1}/3)...`);
+          
+          await new Promise(resolve => setTimeout(resolve, backoffDelay));
+          return fetchContractDataWithRetry(retryCount + 1);
+        }
+        throw error;
+      }
+    };
+    
+    const [long, isActive, isExercised, isResolved, expiry, strikePrice, priceAtExpiry] = await fetchContractDataWithRetry();
     
     const currentTime = Math.floor(Date.now() / 1000);
     
     console.log('Option state check:', {
       contractAddress,
       long,
-      isFilled,
+      isActive,
       isExercised,
       isResolved,
       expiry: expiry.toString(),
@@ -1123,17 +1299,15 @@ app.post('/api/option/:contractAddress/resolveAndExercise', async (req, res) => 
     // Get strike token for approval
     const strikeToken = await optionContract.strikeToken();
     
-    // Prepare approve transaction (user needs to approve MTK spending)
+    // Prepare approve transaction (user needs to approve OptionsBook to spend MTK)
     const tokenContract = new ethers.Contract(strikeToken, MTKABI, provider);
-    const approveData = tokenContract.interface.encodeFunctionData('approve', [contractAddress, amountWei]);
+    const approveData = tokenContract.interface.encodeFunctionData('approve', [OPTIONSBOOK_ADDRESS, amountWei]);
     
-    // Prepare resolve transaction
-    const resolveData = optionContract.interface.encodeFunctionData('resolve');
+    // Prepare resolveAndExercise transaction (call OptionsBook, not individual contract)
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    const resolveAndExerciseData = optionsBookContract.interface.encodeFunctionData('resolveAndExercise', [contractAddress, amountWei]);
     
-    // Prepare exercise transaction
-    const exerciseData = optionContract.interface.encodeFunctionData('exercise', [amountWei]);
-    
-    // Return all three transactions for the frontend to execute sequentially
+    // Return both transactions for the frontend to execute sequentially
     res.json({
       success: true,
       message: 'Resolve and exercise transactions prepared for MetaMask signing',
@@ -1143,14 +1317,9 @@ app.post('/api/option/:contractAddress/resolveAndExercise', async (req, res) => 
           data: approveData,
           value: '0x0'
         },
-        resolveTransaction: {
-          to: contractAddress,
-          data: resolveData,
-          value: '0x0'
-        },
-        exerciseTransaction: {
-          to: contractAddress,
-          data: exerciseData,
+        resolveAndExerciseTransaction: {
+          to: OPTIONSBOOK_ADDRESS,
+          data: resolveAndExerciseData,
           value: '0x0'
         },
         strikeToken: strikeToken,
@@ -1164,6 +1333,93 @@ app.post('/api/option/:contractAddress/resolveAndExercise', async (req, res) => 
     console.error('Error details:', error.message);
     res.status(500).json({ 
       error: 'Failed to prepare resolveAndExercise transaction',
+      details: error.message 
+    });
+  }
+});
+
+// Reclaim option - calls resolveAndReclaim() on the OptionsBook contract (for short position holders)
+app.post('/api/option/:contractAddress/reclaim', async (req, res) => {
+  try {
+    const { contractAddress } = req.params;
+    
+    console.log('Processing reclaim request for contract:', contractAddress);
+    
+    // Validate contract address format
+    if (!contractAddress || !ethers.isAddress(contractAddress)) {
+      return res.status(400).json({ 
+        error: 'Invalid contract address format',
+        address: contractAddress 
+      });
+    }
+    
+    // Get option contract details to verify this is a valid option
+    const { abi: contractABI } = await getContractTypeAndABI(contractAddress);
+    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
+    
+    // Get option state for debugging with retry logic
+    const contractStateData = await retryWithBackoff(async () => {
+      return Promise.all([
+        optionContract.short(),
+        optionContract.isActive(),
+        optionContract.isExercised(),
+        optionContract.isResolved(),
+        optionContract.expiry()
+      ]);
+    });
+    
+    const [short, isActive, isExercised, isResolved, expiry] = contractStateData;
+    
+    const currentTime = Math.floor(Date.now() / 1000);
+    
+    console.log('Option state check for reclaim:', {
+      contractAddress,
+      short,
+      isActive,
+      isExercised,
+      isResolved,
+      expiry: expiry.toString(),
+      currentTime,
+      isExpired: Number(expiry) <= currentTime
+    });
+    
+    // Create OptionsBook contract instance for the reclaim call
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    
+    // Additional debugging - check OptionsBook state with retry logic
+    const optionsBookData = await retryWithBackoff(async () => {
+      return Promise.all([
+        optionsBookContract.isKnownOption(contractAddress),
+        optionsBookContract.shortPosition(contractAddress)
+      ]);
+    });
+    
+    const [isKnownOption, shortPositionFromBook] = optionsBookData;
+    
+    console.log('OptionsBook state check:', {
+      isKnownOption,
+      shortPositionFromBook,
+      shortFromContract: short,
+      addressesMatch: shortPositionFromBook.toLowerCase() === short.toLowerCase()
+    });
+    
+    // Prepare resolveAndReclaim transaction data
+    const reclaimData = optionsBookContract.interface.encodeFunctionData('resolveAndReclaim', [contractAddress]);
+    
+    res.json({
+      success: true,
+      message: 'Reclaim transaction prepared for MetaMask signing',
+      data: {
+        to: OPTIONSBOOK_ADDRESS,
+        data: reclaimData,
+        value: '0x0'
+      }
+    });
+  } catch (error) {
+    console.error('Error preparing reclaim transaction:', error);
+    console.error('Error details:', error.message);
+    res.status(500).json({ 
+      error: 'Failed to prepare reclaim transaction',
       details: error.message 
     });
   }
@@ -1376,46 +1632,144 @@ app.get('/api/contracts/simple', (req, res) => {
   res.json({ contracts: [] });
 });
 
-// Get all contracts from database (MUST come before /:contractAddress route)
+// Get all contracts from blockchain (uses same logic as factory endpoint)
 app.get('/api/contracts/all', async (req, res) => {
-  console.log('GET /api/contracts/all - Request received');
-  console.log('Resolution service available:', !!resolutionService);
+  console.log('GET /api/contracts/all - Using blockchain factory logic');
   
   try {
-    if (!resolutionService) {
-      console.log('Resolution service not ready, returning empty array');
-      return res.json({ contracts: [] });
+    if (!provider) {
+      return res.status(500).json({ error: 'Provider not initialized' });
     }
     
-    const contracts = await resolutionService.db.getAllContracts();
-    console.log('Found contracts in database:', contracts.length);
-    res.json({ contracts });
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    
+    // Get all call and put options from the OptionsBook
+    const callOptions = await optionsBookContract.getAllCallOptions();
+    const putOptions = await optionsBookContract.getAllPutOptions();
+    
+    // Get detailed info for each contract
+    const allContracts = [];
+    
+    // Process call options
+    for (let i = 0; i < callOptions.length; i++) {
+      const address = callOptions[i];
+      try {
+        // Removed delay since RPC calls now have retry mechanism with backoff
+        
+        const optionContract = new ethers.Contract(address, CallOptionContractABI, provider);
+        const contractData = await retryWithBackoff(async () => {
+          return Promise.all([
+            optionContract.short(),
+            optionContract.long(),
+            optionContract.isFunded(),
+            optionContract.isActive(),
+            optionContract.isExercised(),
+            optionContract.isResolved(),
+            optionContract.expiry(),
+            optionContract.strikePrice(),
+            optionContract.optionSize(),
+            optionContract.premium(),
+            optionContract.underlyingToken(),
+            optionContract.strikeToken(),
+            optionContract.underlyingSymbol(),
+            optionContract.strikeSymbol()
+          ]);
+        });
+        
+        const [short, long, isFunded, isActive, isExercised, isResolved, expiry, strikePrice, optionSize, premium, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol] = contractData;
+        
+        allContracts.push({
+          address,
+          type: 'call',
+          short,
+          long,
+          isFunded,
+          isActive,
+          isExercised,
+          isResolved,
+          expiry: expiry.toString(),
+          strikePrice: strikePrice.toString(),
+          optionSize: optionSize.toString(),
+          premium: premium.toString(),
+          underlyingToken,
+          strikeToken,
+          underlyingSymbol,
+          strikeSymbol
+        });
+      } catch (error) {
+        console.error(`Error querying call option ${address}:`, error.message);
+      }
+    }
+    
+    // Process put options (similar logic)
+    for (let i = 0; i < putOptions.length; i++) {
+      const address = putOptions[i];
+      try {
+        // Removed delay since RPC calls now have retry mechanism with backoff
+        
+        const optionContract = new ethers.Contract(address, PutOptionContractABI, provider);
+        const contractData = await retryWithBackoff(async () => {
+          return Promise.all([
+            optionContract.short(),
+            optionContract.long(),
+            optionContract.isFunded(),
+            optionContract.isActive(),
+            optionContract.isExercised(),
+            optionContract.isResolved(),
+            optionContract.expiry(),
+            optionContract.strikePrice(),
+            optionContract.optionSize(),
+            optionContract.premium(),
+            optionContract.underlyingToken(),
+            optionContract.strikeToken(),
+            optionContract.underlyingSymbol(),
+            optionContract.strikeSymbol()
+          ]);
+        });
+        
+        const [short, long, isFunded, isActive, isExercised, isResolved, expiry, strikePrice, optionSize, premium, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol] = contractData;
+        
+        allContracts.push({
+          address,
+          type: 'put',
+          short,
+          long,
+          isFunded,
+          isActive,
+          isExercised,
+          isResolved,
+          expiry: expiry.toString(),
+          strikePrice: strikePrice.toString(),
+          optionSize: optionSize.toString(),
+          premium: premium.toString(),
+          underlyingToken,
+          strikeToken,
+          underlyingSymbol,
+          strikeSymbol
+        });
+      } catch (error) {
+        console.error(`Error querying put option ${address}:`, error.message);
+      }
+    }
+    
+    res.json({ contracts: allContracts });
   } catch (error) {
-    console.error('Error fetching contracts:', error);
-    console.error('Error stack:', error.stack);
+    console.error('Error fetching contracts from blockchain:', error);
     res.status(500).json({ 
-      error: 'Failed to fetch contracts',
+      error: 'Failed to fetch contracts from blockchain',
       details: error.message 
     });
   }
 });
 
-// Get specific contract from database
+// Get specific contract from blockchain (redirect to details endpoint)
 app.get('/api/contracts/:contractAddress', async (req, res) => {
   try {
     const { contractAddress } = req.params;
     
-    if (!resolutionService) {
-      return res.status(500).json({ error: 'Resolution service not initialized' });
-    }
-    
-    const contract = await resolutionService.db.getContract(contractAddress);
-    
-    if (!contract) {
-      return res.status(404).json({ error: 'Contract not found in database' });
-    }
-    
-    res.json({ contract });
+    // Redirect to the blockchain-based details endpoint
+    req.url = `/api/contracts/${contractAddress}/details`;
+    return app._router.handle(req, res);
   } catch (error) {
     console.error('Error fetching contract:', error);
     res.status(500).json({ 

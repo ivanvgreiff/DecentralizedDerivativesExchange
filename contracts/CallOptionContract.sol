@@ -21,7 +21,7 @@ contract CallOptionContract {
     uint256 public premium;
 
     uint256 public expiry;
-    bool public isFilled;
+    bool public isActive; 
     bool public isExercised;
     bool public isFunded;
 
@@ -31,9 +31,10 @@ contract CallOptionContract {
 
     bool private initialized;
 
+    string public constant optionType = "CALL"; // new
     event OptionCreated(address indexed short);
     event ShortFunded(address indexed short, uint256 amount);
-    event OptionFilled(address indexed long, uint256 premiumPaid, uint256 expiry);
+    event OptionActivated(address indexed long, uint256 premiumPaid, uint256 expiry);
     event OptionExercised(address indexed long, uint256 mtkSpent, uint256 twoTkReceived);
     event OptionExpiredUnused(address indexed short);
     event PriceResolved(string underlyingSymbol, string strikeSymbol, uint256 priceAtExpiry, uint256 resolvedAt);
@@ -72,32 +73,21 @@ contract CallOptionContract {
         require(!isFunded, "Already funded");
 
         isFunded = true;
-        // Tokens are already transferred to this contract by OptionsBook
-        
+
         emit ShortFunded(short, optionSize);
     }
 
-    // Enter position and Pay
     function enterAsLong(address realLong) external {
-        require(!isFilled, "Already filled");
+        require(msg.sender == optionsBook, "Only OptionsBook can enter");
+        require(!isActive, "Already activated");
         require(isFunded, "Not funded yet");
         require(long == address(0), "Already entered");
 
         long = realLong;
-        isFilled = true;
+        isActive = true;
         expiry = block.timestamp + 5 minutes;
 
-        require(
-            strikeToken.transferFrom(realLong, address(this), premium),
-            "Premium transfer failed"
-        );
-
-        require(
-            strikeToken.transfer(short, premium),
-            "Premium forwarding failed"
-        );
-
-        emit OptionFilled(realLong, premium, expiry);
+        emit OptionActivated(realLong, premium, expiry);
     }
 
     function resolve() public {
@@ -113,11 +103,12 @@ contract CallOptionContract {
         emit PriceResolved(underlyingSymbol, strikeSymbol, price, block.timestamp);
     }
 
-    function exercise(uint256 mtkAmount) external {
-        require(msg.sender == long, "Only long");
+    function exercise(uint256 mtkAmount, address realLong) external {
+        require(msg.sender == optionsBook, "Only OptionsBook can exercise");
         require(block.timestamp >= expiry, "Too early");
         require(!isExercised, "Already exercised");
         require(isResolved, "Not resolved");
+        require(realLong == long, "Not authorized long");
 
         require(priceAtExpiry > strikePrice, "Not profitable");
         require(mtkAmount > 0, "Zero spend");
@@ -127,25 +118,31 @@ contract CallOptionContract {
 
         isExercised = true;
 
-        require(strikeToken.transferFrom(long, address(this), mtkAmount), "MTK fail");
+        require(strikeToken.transferFrom(realLong, address(this), mtkAmount), "MTK fail");
         require(strikeToken.transfer(short, mtkAmount), "MTK fwd fail");
-        require(underlyingToken.transfer(long, twoTkAmount), "2TK fail");
+        require(underlyingToken.transfer(realLong, twoTkAmount), "2TK fail");
 
         OptionsBook(optionsBook).notifyExercised(mtkAmount);
 
-        emit OptionExercised(long, mtkAmount, twoTkAmount);
+        emit OptionExercised(realLong, mtkAmount, twoTkAmount);
     }
 
-    function reclaim() external {
-        require(msg.sender == short, "Only short");
+    function reclaim(address realShort) external {
+        require(msg.sender == optionsBook, "Only OptionsBook can reclaim");
         require(block.timestamp >= expiry, "Too early");
         require(!isExercised, "Already exercised");
         require(isFunded, "Not funded");
+        require(realShort == short, "Not authorized short");
 
         isExercised = true;
 
-        require(underlyingToken.transfer(short, optionSize), "Reclaim failed");
+        require(underlyingToken.transfer(realShort, optionSize), "Reclaim failed");
 
-        emit OptionExpiredUnused(short);
+        emit OptionExpiredUnused(realShort);
+    }
+
+    // View oracle address directly
+    function getOracleAddress() external view returns (address) {
+        return address(oracle);
     }
 }

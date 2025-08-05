@@ -163,13 +163,13 @@ class ResolutionService {
       const optionContract = new ethers.Contract(contractAddress, OptionContractABI, this.signer);
       
       // Double-check contract state before resolving
-      const [isFilled, isResolved, isExercised] = await Promise.all([
-        optionContract.isFilled(),
+      const [isActive, isResolved, isExercised] = await Promise.all([
+        optionContract.isActive(),
         optionContract.isResolved(),
         optionContract.isExercised()
       ]);
 
-      if (!isFilled) {
+      if (!isActive) {
         console.log(`⚠️ Contract ${contractAddress} not filled, skipping resolution`);
         return;
       }
