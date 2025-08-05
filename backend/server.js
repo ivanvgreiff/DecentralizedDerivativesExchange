@@ -37,162 +37,10 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// Test route at the top to verify Express is working
-app.get('/api/test-top', (req, res) => {
-  console.log('TOP TEST ROUTE HIT!');
-  res.json({ message: 'Top test route working' });
-});
 
-// WORKING CONTRACT REGISTRATION ROUTE AT THE TOP
-app.post('/api/contracts/register-top', async (req, res) => {
-  console.log('TOP REGISTER ROUTE HIT!');
-  try {
-    if (!resolutionService) {
-      console.log('Resolution service not ready');
-      return res.status(500).json({ error: 'Resolution service not initialized' });
-    }
-    
-    const contractData = req.body;
-    console.log('Registering contract:', contractData.address);
-    await resolutionService.addContract(contractData);
-    
-    res.json({ success: true, message: 'Contract registered' });
-  } catch (error) {
-    console.error('Error registering contract:', error);
-    res.status(500).json({ error: 'Failed to register contract' });
-  }
-});
 
-// CONTRACT DETAILS - BLOCKCHAIN ONLY
-app.get('/api/contracts/:contractAddress/details', async (req, res) => {
-  console.log('CONTRACT DETAILS ROUTE - BLOCKCHAIN ONLY');
-  try {
-    const { contractAddress } = req.params;
-    
-    if (!provider) {
-      return res.status(500).json({ error: 'Blockchain provider not initialized' });
-    }
-    
-    console.log('🔍 Fetching contract details from blockchain for:', contractAddress);
-    
-    const { abi: contractABI } = await getContractTypeAndABI(contractAddress);
-    console.log('📋 Contract ABI determined');
-    
-    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
-    console.log('📄 Option contract instance created');
-    
-    const [
-      short,
-      long,
-      underlyingToken,
-      strikeToken,
-      underlyingSymbol,
-      strikeSymbol,
-      strikePrice,
-      optionSize,
-      premium,
-      expiry,
-      isActive,
-      isExercised,
-      isFunded,
-      oracle,
-      priceAtExpiry,
-      isResolved,
-      optionType,
-      oracleAddress
-    ] = await Promise.all([
-      optionContract.short(),
-      optionContract.long(),
-      optionContract.underlyingToken(),
-      optionContract.strikeToken(),
-      optionContract.underlyingSymbol(),
-      optionContract.strikeSymbol(),
-      optionContract.strikePrice(),
-      optionContract.optionSize(),
-      optionContract.premium(),
-      optionContract.expiry(),
-      optionContract.isActive(),
-      optionContract.isExercised(),
-      optionContract.isFunded(),
-      optionContract.oracle(),
-      optionContract.priceAtExpiry(),
-      optionContract.isResolved(),
-      optionContract.optionType(),
-      optionContract.getOracleAddress()
-    ]);
-    
-    console.log('✅ All contract data fetched successfully from blockchain');
-    
-    const transformedContract = {
-      contractAddress,
-      short,
-      long,
-      underlyingToken,
-      strikeToken,
-      underlyingSymbol,
-      strikeSymbol,
-      strikePrice: strikePrice.toString(),
-      optionSize: optionSize.toString(),
-      premium: premium.toString(),
-      oracle: oracleAddress,
-      optionsBook: OPTIONSBOOK_ADDRESS,
-      expiry: expiry.toString(),
-      isFunded,
-      isActive,
-      isResolved,
-      isExercised,
-      priceAtExpiry: priceAtExpiry.toString(),
-      optionType
-    };
-    
-    res.json({ contract: transformedContract });
-  } catch (error) {
-    console.error('❌ Error fetching contract details from blockchain:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch contract details from blockchain',
-      details: error.message 
-    });
-  }
-});
 
-// MOVE CONTRACTS ROUTE TO THE TOP FOR TESTING
-app.get('/api/contracts/all-top', async (req, res) => {
-  console.log('TOP CONTRACTS ROUTE HIT!');
-  try {
-    // We need to wait for resolution service to be initialized
-    if (!resolutionService) {
-      console.log('Resolution service not ready, returning empty array');
-      return res.json({ contracts: [] });
-    }
-    
-    const contracts = await resolutionService.db.getAllContracts();
-    console.log('Found contracts in database:', contracts.length);
-    res.json({ contracts });
-  } catch (error) {
-    console.error('Error fetching contracts from top route:', error);
-    res.json({ contracts: [] });
-  }
-});
 
-// WORKING MANUAL RESOLUTION ROUTE AT THE TOP
-app.post('/api/admin/resolve-expired-top', async (req, res) => {
-  console.log('TOP RESOLVE EXPIRED ROUTE HIT!');
-  try {
-    if (!resolutionService) {
-      return res.status(500).json({ error: 'Resolution service not initialized' });
-    }
-    
-    const resolvedCount = await resolutionService.resolveExpiredContracts();
-    res.json({ 
-      success: true, 
-      message: `Resolution check completed`,
-      resolvedCount: resolvedCount
-    });
-  } catch (error) {
-    console.error('Manual resolution error:', error);
-    res.status(500).json({ error: 'Failed to run resolution check' });
-  }
-});
 
 // FIX DATA INTEGRITY FOR EXERCISED CONTRACTS
 app.post('/api/admin/fix-exercised-data', async (req, res) => {
@@ -232,74 +80,6 @@ app.post('/api/admin/fix-exercised-data', async (req, res) => {
 });
 
 // SYNC DATABASE WITH BLOCKCHAIN STATE
-app.post('/api/admin/sync-database-top', async (req, res) => {
-  console.log('TOP SYNC DATABASE ROUTE HIT!');
-  try {
-    if (!resolutionService || !provider) {
-      return res.status(500).json({ error: 'Services not initialized' });
-    }
-    
-    // Get all contracts from database
-    const contracts = await resolutionService.db.getAllContracts();
-    let syncedCount = 0;
-    
-    for (const contract of contracts) {
-      try {
-        console.log(`Syncing contract ${contract.address}...`);
-        
-        // Get on-chain state
-        const { abi: contractABI } = await getContractTypeAndABI(contract.address);
-        const optionContract = new ethers.Contract(contract.address, contractABI, provider);
-            const [isActive, isResolved, isExercised, long, expiry, priceAtExpiry] = await Promise.all([
-      optionContract.isActive(),
-      optionContract.isResolved(),
-      optionContract.isExercised(),
-      optionContract.long(),
-      optionContract.expiry(),
-      optionContract.priceAtExpiry()
-    ]);
-        
-        // Update database if state differs
-        const updates = {};
-        if (isActive !== Boolean(contract.is_filled)) {
-          updates.is_filled = isActive ? 1 : 0;
-          if (isActive && !contract.long_address) {
-            updates.long_address = long;
-            updates.expiry = expiry.toString();
-            updates.filled_at = new Date().toISOString();
-          }
-        }
-        if (isResolved !== Boolean(contract.is_resolved)) {
-          updates.is_resolved = isResolved ? 1 : 0;
-        }
-        if (isExercised !== Boolean(contract.is_exercised)) {
-          updates.is_exercised = isExercised ? 1 : 0;
-        }
-        if (isResolved && priceAtExpiry.toString() !== '0' && !contract.price_at_expiry) {
-          updates.price_at_expiry = priceAtExpiry.toString();
-        }
-        
-        if (Object.keys(updates).length > 0) {
-          await resolutionService.db.updateContract(contract.address, updates);
-          console.log(`Updated contract ${contract.address}:`, updates);
-          syncedCount++;
-        }
-        
-      } catch (error) {
-        console.error(`Error syncing contract ${contract.address}:`, error.message);
-      }
-    }
-    
-    res.json({ 
-      success: true, 
-      message: `Database sync completed`,
-      syncedCount: syncedCount
-    });
-  } catch (error) {
-    console.error('Database sync error:', error);
-    res.status(500).json({ error: 'Failed to sync database' });
-  }
-});
 
 // Blockchain setup
 let provider;
@@ -587,70 +367,52 @@ let resolutionService;
 // API Routes
 
 // Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
 
 // Get blockchain status
+// Backend caching to reduce RPC calls
+let blockchainStatusCache = { data: null, timestamp: 0 };
+let oraclePricesCache = { data: null, timestamp: 0 };
+let factoryContractsCache = { data: null, timestamp: 0 };
+const CACHE_DURATION = 30000; // 30 seconds
+
 app.get('/api/blockchain/status', async (req, res) => {
   try {
     if (!provider) {
       return res.status(500).json({ error: 'Blockchain provider not initialized' });
     }
     
+    // Return cached data if still fresh
+    const now = Date.now();
+    if (blockchainStatusCache.data && (now - blockchainStatusCache.timestamp) < CACHE_DURATION) {
+      return res.json({...blockchainStatusCache.data, cached: true});
+    }
+    
     const blockNumber = await provider.getBlockNumber();
     const network = await provider.getNetwork();
-    res.json({
+    
+    const statusData = {
       connected: true,
       blockNumber,
       network: network.name,
       chainId: network.chainId.toString()
-    });
+    };
+
+    // Update cache
+    blockchainStatusCache = { data: statusData, timestamp: now };
+    res.json(statusData);
   } catch (error) {
     console.error('Blockchain status error:', error);
+    // Return cached data if available, even if stale
+    if (blockchainStatusCache.data) {
+      return res.json({...blockchainStatusCache.data, cached: true, stale: true});
+    }
     res.status(500).json({ error: 'Failed to get blockchain status' });
   }
 });
 
 // Get account balance
-app.get('/api/account/:address/balance', async (req, res) => {
-  try {
-    const { address } = req.params;
-    const balance = await provider.getBalance(address);
-    res.json({
-      address,
-      balance: ethers.formatEther(balance),
-      balanceWei: balance.toString()
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get balance' });
-  }
-});
 
 // Get token balance
-app.get('/api/token/:tokenAddress/balance/:userAddress', async (req, res) => {
-  try {
-    const { tokenAddress, userAddress } = req.params;
-    const tokenContract = new ethers.Contract(tokenAddress, MTKABI, provider);
-    
-    // Bundle 3 RPC calls into single batch to reduce network requests
-    const [balance, symbol, decimals] = await Promise.all([
-      tokenContract.balanceOf(userAddress),
-      tokenContract.symbol(),
-      tokenContract.decimals()
-    ]);
-    
-    res.json({
-      tokenAddress,
-      userAddress,
-      symbol,
-      balance: ethers.formatUnits(balance, decimals),
-      balanceRaw: balance.toString()
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get token balance' });
-  }
-});
 
 // Get oracle prices
 app.get('/api/oracle/prices', async (req, res) => {
@@ -1139,27 +901,6 @@ app.post('/api/option/:contractAddress/enter', async (req, res) => {
 
 
 // Resolve option
-app.post('/api/option/:contractAddress/resolve', async (req, res) => {
-  try {
-    const { contractAddress } = req.params;
-    const { abi: contractABI } = await getContractTypeAndABI(contractAddress);
-    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
-    
-    const resolveData = optionContract.interface.encodeFunctionData('resolve');
-    
-    res.json({
-      success: true,
-      message: 'Resolve transaction prepared for MetaMask signing',
-      data: {
-        to: contractAddress,
-        data: resolveData,
-        value: '0x0'
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to prepare resolve transaction' });
-  }
-});
 
 // Exercise option - simple direct contract call
 app.post('/api/option/:contractAddress/exercise', async (req, res) => {
@@ -1179,11 +920,11 @@ app.post('/api/option/:contractAddress/exercise', async (req, res) => {
     let amountWei, amountParam, logMessage;
     if (contractType === 'call') {
       amountWei = ethers.parseUnits(mtkAmount.toString(), 18);
-      amountParam = mtkAmountWei;
+      amountParam = amountWei;
       logMessage = `MTK amount to spend: ${mtkAmount}`;
     } else if (contractType === 'put') {
       amountWei = ethers.parseUnits(twoTkAmount.toString(), 18);
-      amountParam = twoTkAmountWei;
+      amountParam = amountWei;
       logMessage = `2TK amount to spend: ${twoTkAmount}`;
     } else {
       // Fallback for unknown type
@@ -1621,16 +1362,7 @@ app.post('/api/contracts/:contractAddress/exercised', async (req, res) => {
 });
 
 // Test route to isolate the issue
-app.get('/api/test', (req, res) => {
-  console.log('TEST ROUTE HIT!');
-  res.json({ message: 'Test route working' });
-});
 
-// TEMPORARY SIMPLE CONTRACTS ROUTE FOR DEBUGGING
-app.get('/api/contracts/simple', (req, res) => {
-  console.log('SIMPLE CONTRACTS ROUTE HIT!');
-  res.json({ contracts: [] });
-});
 
 // Get all contracts from blockchain (uses same logic as factory endpoint)
 app.get('/api/contracts/all', async (req, res) => {
@@ -1762,22 +1494,6 @@ app.get('/api/contracts/all', async (req, res) => {
   }
 });
 
-// Get specific contract from blockchain (redirect to details endpoint)
-app.get('/api/contracts/:contractAddress', async (req, res) => {
-  try {
-    const { contractAddress } = req.params;
-    
-    // Redirect to the blockchain-based details endpoint
-    req.url = `/api/contracts/${contractAddress}/details`;
-    return app._router.handle(req, res);
-  } catch (error) {
-    console.error('Error fetching contract:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch contract',
-      details: error.message 
-    });
-  }
-});
 
 // Debug: List all registered routes
 app._router.stack.forEach(function(r){

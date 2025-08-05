@@ -148,28 +148,37 @@ contract OptionsBook {
     function resolveAndExercise(address optionAddress, uint256 mtkAmount) external {
         require(isKnownOption(optionAddress), "Unknown option");
 
-        // Fetch actual long from the option contract
-        (bool successLong, bytes memory dataLong) = optionAddress.call(
-            abi.encodeWithSignature("long()")
-        );
-        require(successLong, "Failed to get long address");
-        address actualLong = abi.decode(dataLong, (address));
-
+        // Fetch and verify long address
+        (bool success, bytes memory data) = optionAddress.call(abi.encodeWithSignature("long()"));
+        require(success, "Failed to get long address");
+        address actualLong = abi.decode(data, (address));
         require(msg.sender == actualLong, "Not authorized: only long");
 
-        (bool success, bytes memory data) = optionAddress.call(abi.encodeWithSignature("isResolved()"));
+        // Check if resolution is needed
+        (success, data) = optionAddress.call(abi.encodeWithSignature("isResolved()"));
         require(success, "isResolved() call failed");
-        bool alreadyResolved = abi.decode(data, (bool));
-
-        if (!alreadyResolved) {
-            (bool resolved, ) = optionAddress.call(abi.encodeWithSignature("resolve()"));
-            require(resolved, "resolve() failed");
+        if (!abi.decode(data, (bool))) {
+            (success, ) = optionAddress.call(abi.encodeWithSignature("resolve()"));
+            require(success, "resolve() failed");
         }
 
-        (bool exercised, ) = optionAddress.call(
-            abi.encodeWithSignature("exercise(uint256,address)", mtkAmount, actualLong)
-        );
-        require(exercised, "exercise() failed");
+        // Get strike token for transfers
+        (success, data) = optionAddress.call(abi.encodeWithSignature("strikeToken()"));
+        require(success, "Failed to get strike token");
+        IERC20 strikeTokenContract = IERC20(abi.decode(data, (address)));
+        
+        // Get short address for transfers
+        (success, data) = optionAddress.call(abi.encodeWithSignature("short()"));
+        require(success, "Failed to get short address");
+        address short = abi.decode(data, (address));
+        
+        // Handle token transfers
+        require(strikeTokenContract.transferFrom(msg.sender, address(this), mtkAmount), "MTK transfer to OptionsBook failed");
+        require(strikeTokenContract.transfer(short, mtkAmount), "MTK transfer to short failed");
+        
+        // Exercise with zero amount since payment already handled
+        (success, ) = optionAddress.call(abi.encodeWithSignature("exercise(uint256,address)", 0, actualLong));
+        require(success, "exercise() failed");
     }
 
     function resolveAndReclaim(address optionAddress) external {

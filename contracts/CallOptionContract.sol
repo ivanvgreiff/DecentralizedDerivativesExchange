@@ -111,18 +111,28 @@ contract CallOptionContract {
         require(realLong == long, "Not authorized long");
 
         require(priceAtExpiry > strikePrice, "Not profitable");
-        require(mtkAmount > 0, "Zero spend");
-
-        uint256 twoTkAmount = (mtkAmount * 1e18) / strikePrice;
-        require(twoTkAmount <= optionSize, "Too much");
+        
+        uint256 twoTkAmount;
+        uint256 actualMtkAmount;
+        
+        if (mtkAmount > 0) {
+            // Direct exercise: calculate twoTkAmount from provided mtkAmount
+            actualMtkAmount = mtkAmount;
+            twoTkAmount = (mtkAmount * 1e18) / strikePrice;
+            require(twoTkAmount <= optionSize, "Too much");
+            
+            // Handle direct payment
+            require(strikeToken.transferFrom(realLong, address(this), mtkAmount), "MTK fail");
+            require(strikeToken.transfer(short, mtkAmount), "MTK fwd fail");
+        } else {
+            // OptionsBook exercise: use maximum possible amount (OptionsBook already handled payment)
+            twoTkAmount = optionSize; // Use full option size
+            actualMtkAmount = (twoTkAmount * strikePrice) / 1e18; // Calculate equivalent MTK
+        }
 
         isExercised = true;
-
-        require(strikeToken.transferFrom(realLong, address(this), mtkAmount), "MTK fail");
-        require(strikeToken.transfer(short, mtkAmount), "MTK fwd fail");
         require(underlyingToken.transfer(realLong, twoTkAmount), "2TK fail");
-
-        OptionsBook(optionsBook).notifyExercised(mtkAmount);
+        OptionsBook(optionsBook).notifyExercised(actualMtkAmount);
 
         emit OptionExercised(realLong, mtkAmount, twoTkAmount);
     }

@@ -22,7 +22,7 @@ contract DeployOptionContract is Script {
         CallOptionContract callImpl = new CallOptionContract();
 
         // Deploy the OptionsBook factory with the above implementations
-        OptionsBook book = new OptionsBook(address(putImpl), address(callImpl));
+        OptionsBook book = new OptionsBook(address(callImpl), address(putImpl));
 
         vm.stopBroadcast();
 
