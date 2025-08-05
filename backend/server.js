@@ -6,6 +6,13 @@ const rateLimit = require('express-rate-limit');
 const { ethers } = require('ethers');
 require('dotenv').config();
 
+// Simple in-memory cache for factory contracts
+const factoryCache = {
+  data: null,
+  timestamp: 0,
+  ttl: 30000 // 30 seconds cache
+};
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -205,7 +212,8 @@ app.post('/api/admin/sync-database-top', async (req, res) => {
         console.log(`Syncing contract ${contract.address}...`);
         
         // Get on-chain state
-        const optionContract = new ethers.Contract(contract.address, OptionContractABI, provider);
+        const { abi: contractABI } = await getContractTypeAndABI(contract.address);
+        const optionContract = new ethers.Contract(contract.address, contractABI, provider);
         const [isFilled, isResolved, isExercised, long, expiry, priceAtExpiry] = await Promise.all([
           optionContract.isFilled(),
           optionContract.isResolved(),
@@ -282,17 +290,47 @@ async function initializeBlockchain() {
 }
 
 // Contract ABIs (you'll need to import these from your compiled contracts)
-const OptionContractABI = require('../contract-utils/OptionContractABI.json');
+const CallOptionContractABI = require('../contract-utils/CallOptionContractABI.json');
+const PutOptionContractABI = require('../contract-utils/PutOptionContractABI.json');
 const SimuOracleABI = require('../contract-utils/SimuOracleABI.json');
 const MTKABI = require('../contract-utils/MTKContractABI.json');
 const TwoTKABI = require('../contract-utils/TwoTKContractABI.json');
+
+// Helper function to determine contract type and get appropriate ABI
+async function getContractTypeAndABI(contractAddress) {
+  try {
+    console.log('🔍 Determining contract type for:', contractAddress);
+    
+    // First try to check if it's a known option in the OptionsBook
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    console.log('📋 OptionsBook contract created');
+    
+    const isCallOption = await optionsBookContract.isCallOption(contractAddress);
+    console.log('📊 Is call option:', isCallOption);
+    
+    if (isCallOption) {
+      console.log('✅ Returning call option ABI');
+      return { type: 'call', abi: CallOptionContractABI };
+    } else {
+      console.log('✅ Returning put option ABI');
+      return { type: 'put', abi: PutOptionContractABI };
+    }
+  } catch (error) {
+    console.error('❌ Error determining contract type:', error);
+    console.error('❌ Error message:', error.message);
+    console.log('🔄 Defaulting to call option ABI');
+    // Default to call option ABI if we can't determine the type
+    return { type: 'call', abi: CallOptionContractABI };
+  }
+}
 
 // OptionsBook ABI for factory pattern
 const OptionsBookABI = [
   'function createAndFundCallOption(address _underlyingToken, address _strikeToken, string memory _underlyingSymbol, string memory _strikeSymbol, uint256 _strikePrice, uint256 _optionSize, uint256 _premium, address _oracle) external returns (address)',
   'function createAndFundPutOption(address _underlyingToken, address _strikeToken, string memory _underlyingSymbol, string memory _strikeSymbol, uint256 _strikePrice, uint256 _optionSize, uint256 _premium, address _oracle) external returns (address)',
   'function getAllCallOptions() external view returns (address[] memory)',
-  'function getAllPutOptions() external view returns (address[] memory)'
+  'function getAllPutOptions() external view returns (address[] memory)',
+  'function isCallOption(address option) external view returns (bool)'
 ];
 
 // Contract addresses from environment (NO FALLBACKS - MUST BE IN .env)
@@ -323,6 +361,14 @@ console.log('  PUT_OPTION_IMPL:', PUT_IMPL_ADDRESS);
 app.get('/api/factory/all-contracts', async (req, res) => {
   try {
     console.log('🔍 Factory endpoint called');
+    
+    // Check cache first
+    const now = Date.now();
+    if (factoryCache.data && (now - factoryCache.timestamp) < factoryCache.ttl) {
+      console.log('📦 Returning cached factory data');
+      return res.json(factoryCache.data);
+    }
+    
     console.log('Provider available:', !!provider);
     console.log('OptionsBook address:', OPTIONSBOOK_ADDRESS);
     
@@ -347,8 +393,8 @@ app.get('/api/factory/all-contracts', async (req, res) => {
     
     for (const address of callOptions) {
       try {
-        const optionContract = new ethers.Contract(address, OptionContractABI, provider);
-        const [short, long, isFunded, isFilled, isExercised, isResolved, expiry, strikePrice, optionSize, premium] = await Promise.all([
+        const optionContract = new ethers.Contract(address, CallOptionContractABI, provider);
+        const [short, long, isFunded, isFilled, isExercised, isResolved, expiry, strikePrice, optionSize, premium, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol] = await Promise.all([
           optionContract.short(),
           optionContract.long(),
           optionContract.isFunded(),
@@ -358,7 +404,11 @@ app.get('/api/factory/all-contracts', async (req, res) => {
           optionContract.expiry(),
           optionContract.strikePrice(),
           optionContract.optionSize(),
-          optionContract.premium()
+          optionContract.premium(),
+          optionContract.underlyingToken(),
+          optionContract.strikeToken(),
+          optionContract.underlyingSymbol(),
+          optionContract.strikeSymbol()
         ]);
         
         allContracts.push({
@@ -373,7 +423,11 @@ app.get('/api/factory/all-contracts', async (req, res) => {
           expiry: expiry.toString(),
           strikePrice: strikePrice.toString(),
           optionSize: optionSize.toString(),
-          premium: premium.toString()
+          premium: premium.toString(),
+          underlyingToken,
+          strikeToken,
+          underlyingSymbol,
+          strikeSymbol
         });
       } catch (error) {
         console.error(`Error querying call option ${address}:`, error.message);
@@ -382,8 +436,8 @@ app.get('/api/factory/all-contracts', async (req, res) => {
     
     for (const address of putOptions) {
       try {
-        const optionContract = new ethers.Contract(address, OptionContractABI, provider);
-        const [short, long, isFunded, isFilled, isExercised, isResolved, expiry, strikePrice, optionSize, premium] = await Promise.all([
+        const optionContract = new ethers.Contract(address, PutOptionContractABI, provider);
+        const [short, long, isFunded, isFilled, isExercised, isResolved, expiry, strikePrice, optionSize, premium, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol] = await Promise.all([
           optionContract.short(),
           optionContract.long(),
           optionContract.isFunded(),
@@ -393,7 +447,11 @@ app.get('/api/factory/all-contracts', async (req, res) => {
           optionContract.expiry(),
           optionContract.strikePrice(),
           optionContract.optionSize(),
-          optionContract.premium()
+          optionContract.premium(),
+          optionContract.underlyingToken(),
+          optionContract.strikeToken(),
+          optionContract.underlyingSymbol(),
+          optionContract.strikeSymbol()
         ]);
         
         allContracts.push({
@@ -408,25 +466,43 @@ app.get('/api/factory/all-contracts', async (req, res) => {
           expiry: expiry.toString(),
           strikePrice: strikePrice.toString(),
           optionSize: optionSize.toString(),
-          premium: premium.toString()
+          premium: premium.toString(),
+          underlyingToken,
+          strikeToken,
+          underlyingSymbol,
+          strikeSymbol
         });
       } catch (error) {
         console.error(`Error querying put option ${address}:`, error.message);
       }
     }
     
-    res.json({ 
+    const responseData = { 
       optionsBookAddress: OPTIONSBOOK_ADDRESS,
       callOptionsCount: callOptions.length,
       putOptionsCount: putOptions.length,
       contracts: allContracts
-    });
+    };
+    
+    // Cache the response
+    factoryCache.data = responseData;
+    factoryCache.timestamp = now;
+    console.log('💾 Cached factory data');
+    
+    res.json(responseData);
   } catch (error) {
     console.error('Error querying factory contracts:', error);
     res.status(500).json({ error: 'Failed to query factory contracts' });
   }
 });
 
+// Cache invalidation endpoint
+app.post('/api/factory/clear-cache', (req, res) => {
+  factoryCache.data = null;
+  factoryCache.timestamp = 0;
+  console.log('🗑️ Factory cache cleared');
+  res.json({ success: true, message: 'Cache cleared' });
+});
 
 // New resolution service with database
 const ResolutionService = require('./resolutionService');
@@ -526,11 +602,60 @@ app.get('/api/oracle/prices', async (req, res) => {
   }
 });
 
+// Get live price for a specific token from oracle
+app.get('/api/oracle/price/:tokenAddress', async (req, res) => {
+  try {
+    const { tokenAddress } = req.params;
+    const oracleAddress = process.env.ORACLE_ADDRESS;
+    
+    if (!oracleAddress) {
+      return res.status(500).json({ error: 'Oracle address not configured' });
+    }
+    
+    if (!ethers.isAddress(tokenAddress)) {
+      return res.status(400).json({ error: 'Invalid token address' });
+    }
+    
+    const oracleContract = new ethers.Contract(oracleAddress, SimuOracleABI, provider);
+    
+    try {
+      const [realPrice, price1e18, lastUpdated, symbol] = await oracleContract.getPrice(tokenAddress);
+      
+      res.json({
+        tokenAddress,
+        symbol,
+        realPrice: realPrice.toString(),
+        price1e18: price1e18.toString(),
+        priceFormatted: ethers.formatUnits(price1e18, 18),
+        lastUpdated: lastUpdated.toString(),
+        lastUpdatedDate: new Date(parseInt(lastUpdated.toString()) * 1000).toISOString(),
+        timestamp: Date.now()
+      });
+    } catch (oracleError) {
+      // Token might not be in oracle
+      return res.status(404).json({ 
+        error: 'Token not found in oracle',
+        tokenAddress,
+        details: oracleError.message 
+      });
+    }
+  } catch (error) {
+    console.error('Error getting token price from oracle:', error);
+    res.status(500).json({ error: 'Failed to get token price from oracle' });
+  }
+});
+
 // Get option contract details
 app.get('/api/option/:contractAddress', async (req, res) => {
   try {
     const { contractAddress } = req.params;
-    const optionContract = new ethers.Contract(contractAddress, OptionContractABI, provider);
+    console.log('🔍 Fetching option details for:', contractAddress);
+    
+    const { abi: contractABI } = await getContractTypeAndABI(contractAddress);
+    console.log('📋 Contract ABI determined');
+    
+    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
+    console.log('📄 Option contract instance created');
     
     const [
       short,
@@ -568,6 +693,8 @@ app.get('/api/option/:contractAddress', async (req, res) => {
       optionContract.isResolved()
     ]);
     
+    console.log('✅ All contract data fetched successfully');
+    
     res.json({
       contractAddress,
       short,
@@ -588,7 +715,13 @@ app.get('/api/option/:contractAddress', async (req, res) => {
       isResolved
     });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to get option contract details' });
+    console.error('❌ Error fetching option details:', error);
+    console.error('❌ Error message:', error.message);
+    console.error('❌ Error stack:', error.stack);
+    res.status(500).json({ 
+      error: 'Failed to get option contract details',
+      details: error.message 
+    });
   }
 });
 
@@ -761,7 +894,8 @@ app.post('/api/option/create-put', async (req, res) => {
 app.post('/api/option/:contractAddress/fund', async (req, res) => {
   try {
     const { contractAddress } = req.params;
-    const optionContract = new ethers.Contract(contractAddress, OptionContractABI, provider);
+    const { abi: contractABI } = await getContractTypeAndABI(contractAddress);
+    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
     
     // Prepare fund transaction data
     const fundData = optionContract.interface.encodeFunctionData('fund');
@@ -795,7 +929,8 @@ app.post('/api/option/:contractAddress/enter', async (req, res) => {
     }
     
     console.log('Processing enter request for contract:', contractAddress);
-    const optionContract = new ethers.Contract(contractAddress, OptionContractABI, provider);
+    const { abi: contractABI } = await getContractTypeAndABI(contractAddress);
+    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
     
     // Get contract details to determine strike token and premium
     const strikeToken = await optionContract.strikeToken();
@@ -809,7 +944,7 @@ app.post('/api/option/:contractAddress/enter', async (req, res) => {
     const approveData = tokenContract.interface.encodeFunctionData('approve', [contractAddress, premium]);
     
     // Prepare enterAsLong transaction data
-    const enterData = optionContract.interface.encodeFunctionData('enterAsLong');
+    const enterData = optionContract.interface.encodeFunctionData('enterAsLong', [req.body.userAddress || req.body.from]);
     
     // Return both transactions for the frontend to execute separately
     res.json({
@@ -841,11 +976,14 @@ app.post('/api/option/:contractAddress/enter', async (req, res) => {
   }
 });
 
+
+
 // Resolve option
 app.post('/api/option/:contractAddress/resolve', async (req, res) => {
   try {
     const { contractAddress } = req.params;
-    const optionContract = new ethers.Contract(contractAddress, OptionContractABI, provider);
+    const { abi: contractABI } = await getContractTypeAndABI(contractAddress);
+    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
     
     const resolveData = optionContract.interface.encodeFunctionData('resolve');
     
@@ -867,28 +1005,43 @@ app.post('/api/option/:contractAddress/resolve', async (req, res) => {
 app.post('/api/option/:contractAddress/exercise', async (req, res) => {
   try {
     const { contractAddress } = req.params;
-    const { mtkAmount } = req.body;
+    const { mtkAmount, twoTkAmount } = req.body;
     
     console.log('Processing exercise request for contract:', contractAddress);
-    console.log('MTK amount to spend:', mtkAmount);
     
-    const optionContract = new ethers.Contract(contractAddress, OptionContractABI, provider);
+    const { abi: contractABI, type: contractType } = await getContractTypeAndABI(contractAddress);
+    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
     
     // Get contract details to determine strike token
     const strikeToken = await optionContract.strikeToken();
     
-    // Convert mtkAmount to wei (assuming it comes as a number)
-    const mtkAmountWei = ethers.parseUnits(mtkAmount.toString(), 18);
+    // Determine amount and parameter name based on contract type
+    let amountWei, amountParam, logMessage;
+    if (contractType === 'call') {
+      amountWei = ethers.parseUnits(mtkAmount.toString(), 18);
+      amountParam = mtkAmountWei;
+      logMessage = `MTK amount to spend: ${mtkAmount}`;
+    } else if (contractType === 'put') {
+      amountWei = ethers.parseUnits(twoTkAmount.toString(), 18);
+      amountParam = twoTkAmountWei;
+      logMessage = `2TK amount to spend: ${twoTkAmount}`;
+    } else {
+      // Fallback for unknown type
+      amountWei = ethers.parseUnits((mtkAmount || twoTkAmount).toString(), 18);
+      amountParam = amountWei;
+      logMessage = `Amount to spend: ${mtkAmount || twoTkAmount}`;
+    }
     
+    console.log(logMessage);
     console.log('Strike token:', strikeToken);
-    console.log('MTK amount (wei):', mtkAmountWei.toString());
+    console.log('Amount (wei):', amountWei.toString());
     
     // Prepare approve transaction data
     const tokenContract = new ethers.Contract(strikeToken, MTKABI, provider);
-    const approveData = tokenContract.interface.encodeFunctionData('approve', [contractAddress, mtkAmountWei]);
+    const approveData = tokenContract.interface.encodeFunctionData('approve', [contractAddress, amountWei]);
     
     // Prepare exercise transaction data
-    const exerciseData = optionContract.interface.encodeFunctionData('exercise', [mtkAmountWei]);
+    const exerciseData = optionContract.interface.encodeFunctionData('exercise', [amountWei]);
     
     // Return both transactions for the frontend to execute separately
     res.json({
@@ -906,7 +1059,8 @@ app.post('/api/option/:contractAddress/exercise', async (req, res) => {
           value: '0x0'
         },
         strikeToken: strikeToken,
-        mtkAmount: mtkAmountWei.toString(),
+        amount: amountWei.toString(),
+        contractType: contractType,
         contractAddress: contractAddress
       }
     });
@@ -915,6 +1069,101 @@ app.post('/api/option/:contractAddress/exercise', async (req, res) => {
     console.error('Error details:', error.message);
     res.status(500).json({ 
       error: 'Failed to prepare exercise transaction',
+      details: error.message 
+    });
+  }
+});
+
+// Exercise option - calls resolve() then exercise() on the individual contract
+app.post('/api/option/:contractAddress/resolveAndExercise', async (req, res) => {
+  try {
+    const { contractAddress } = req.params;
+    const { mtkAmount } = req.body;
+    
+    console.log('Processing resolveAndExercise request for contract:', contractAddress);
+    
+    // Determine contract type and get appropriate ABI
+    const { abi: contractABI, type: contractType } = await getContractTypeAndABI(contractAddress);
+    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
+    
+    // Get option state for debugging
+    const [long, isFilled, isExercised, isResolved, expiry, strikePrice, priceAtExpiry] = await Promise.all([
+      optionContract.long(),
+      optionContract.isFilled(),
+      optionContract.isExercised(),
+      optionContract.isResolved(),
+      optionContract.expiry(),
+      optionContract.strikePrice(),
+      optionContract.priceAtExpiry()
+    ]);
+    
+    const currentTime = Math.floor(Date.now() / 1000);
+    
+    console.log('Option state check:', {
+      contractAddress,
+      long,
+      isFilled,
+      isExercised,
+      isResolved,
+      expiry: expiry.toString(),
+      strikePrice: strikePrice.toString(),
+      priceAtExpiry: priceAtExpiry.toString(),
+      currentTime,
+      isExpired: Number(expiry) <= currentTime,
+      isProfitable: Number(priceAtExpiry) > Number(strikePrice)
+    });
+    
+    // Convert amount to wei
+    const amountWei = ethers.parseUnits(mtkAmount.toString(), 18);
+    
+    console.log('Contract address:', contractAddress);
+    console.log('MTK amount to spend:', mtkAmount);
+    console.log('Amount (wei):', amountWei.toString());
+    
+    // Get strike token for approval
+    const strikeToken = await optionContract.strikeToken();
+    
+    // Prepare approve transaction (user needs to approve MTK spending)
+    const tokenContract = new ethers.Contract(strikeToken, MTKABI, provider);
+    const approveData = tokenContract.interface.encodeFunctionData('approve', [contractAddress, amountWei]);
+    
+    // Prepare resolve transaction
+    const resolveData = optionContract.interface.encodeFunctionData('resolve');
+    
+    // Prepare exercise transaction
+    const exerciseData = optionContract.interface.encodeFunctionData('exercise', [amountWei]);
+    
+    // Return all three transactions for the frontend to execute sequentially
+    res.json({
+      success: true,
+      message: 'Resolve and exercise transactions prepared for MetaMask signing',
+      data: {
+        approveTransaction: {
+          to: strikeToken,
+          data: approveData,
+          value: '0x0'
+        },
+        resolveTransaction: {
+          to: contractAddress,
+          data: resolveData,
+          value: '0x0'
+        },
+        exerciseTransaction: {
+          to: contractAddress,
+          data: exerciseData,
+          value: '0x0'
+        },
+        strikeToken: strikeToken,
+        amount: amountWei.toString(),
+        contractType: contractType,
+        contractAddress: contractAddress
+      }
+    });
+  } catch (error) {
+    console.error('Error preparing resolveAndExercise transaction:', error);
+    console.error('Error details:', error.message);
+    res.status(500).json({ 
+      error: 'Failed to prepare resolveAndExercise transaction',
       details: error.message 
     });
   }

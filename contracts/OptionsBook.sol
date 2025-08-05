@@ -17,6 +17,9 @@ contract OptionsBook {
     mapping(address => bool) public isExercised;
     mapping(address => bool) public isCallOption;
 
+    mapping(address => address) public longPosition;  // option => long address
+    mapping(address => address) public shortPosition; // option => short address
+
     event OptionCreated(address indexed creator, address indexed instance, string optionType);
     event OptionExercised(address indexed option, uint256 strikeTokenAmount);
 
@@ -52,6 +55,7 @@ contract OptionsBook {
 
         callOptions.push(clone);
         isCallOption[clone] = true;
+        shortPosition[clone] = msg.sender;
 
         // Collect 2TK from msg.sender (short), then fund the clone
         IERC20(_underlyingToken).transferFrom(msg.sender, clone, _optionSize);
@@ -89,6 +93,7 @@ contract OptionsBook {
 
         putOptions.push(clone);
         isCallOption[clone] = false;
+        shortPosition[clone] = msg.sender;
 
         uint256 mtkToSend = (_optionSize * _strikePrice) / 1e18;
         IERC20(_strikeToken).transferFrom(msg.sender, clone, mtkToSend);
@@ -98,13 +103,46 @@ contract OptionsBook {
         emit OptionCreated(msg.sender, clone, "PUT");
     }
 
-    function enterAndPayPremium(
-        address optionAddress
-    ) external {
+    function enterAndPayPremium(address optionAddress) external {
+        require(isKnownOption(optionAddress), "Unknown option");
+
         (bool success, ) = optionAddress.call(
             abi.encodeWithSignature("enterAsLong(address)", msg.sender)
         );
         require(success, "enterAsLong failed");
+
+        // Save long address if not already recorded
+        if (longPosition[optionAddress] == address(0)) {
+            longPosition[optionAddress] = msg.sender;
+        }
+    }
+
+    function resolveAndExercise(address optionAddress, uint256 mtkAmount) external {
+        require(isKnownOption(optionAddress), "Unknown option");
+        require(msg.sender == longPosition[optionAddress], "Not authorized: only long");
+
+        // Resolve
+        (bool resolved, ) = optionAddress.call(abi.encodeWithSignature("resolve()"));
+        require(resolved, "resolve() failed");
+
+        // Exercise
+        (bool exercised, ) = optionAddress.call(
+            abi.encodeWithSignature("exercise(uint256)", mtkAmount)
+        );
+        require(exercised, "exercise() failed");
+    }
+
+    function resolveAndReclaim(address optionAddress) external {
+        require(isKnownOption(optionAddress), "Unknown option");
+        require(msg.sender == shortPosition[optionAddress], "Not authorized: only short");
+
+        // Resolve
+        (bool resolved, ) = optionAddress.call(abi.encodeWithSignature("resolve()"));
+        require(resolved, "resolve() failed");
+
+        // Reclaim
+        (bool reclaimed, ) = optionAddress.call(abi.encodeWithSignature("reclaim()"));
+        require(reclaimed, "reclaim() failed");
     }
 
     function notifyExercised(uint256 strikeTokenAmount) external {
