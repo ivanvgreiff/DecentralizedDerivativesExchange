@@ -236,6 +236,7 @@ app.get('/api/factory/all-contracts', async (req, res) => {
         address: meta.optionAddress,
         type: meta.isCall ? 'call' : 'put',
         optionType: meta.isCall ? 'CALL' : 'PUT', // For P&L calculations
+        payoffType: meta.payoffType || 'Linear', // Default to Linear if not set
         short: meta.short,
         long: meta.long,
         isFunded,
@@ -639,7 +640,8 @@ app.get('/api/option/:contractAddress', async (req, res) => {
       isResolved: optionMeta.isResolved,
       needsResolution,
       resolutionStatus,
-      optionType: optionMeta.isCall ? 'CALL' : 'PUT'
+      optionType: optionMeta.isCall ? 'CALL' : 'PUT',
+      payoffType: optionMeta.payoffType || 'Linear'
     });
   } catch (error) {
     console.error('❌ Error fetching option details:', error);
@@ -671,7 +673,8 @@ app.post('/api/option/create-call', async (req, res) => {
       optionSize,
       premium,
       oracle,
-      userAddress
+      userAddress,
+      payoffType
     } = req.body;
     
     if (!underlyingToken || !strikeToken || !oracle || !userAddress) {
@@ -702,7 +705,8 @@ app.post('/api/option/create-call', async (req, res) => {
       strikePriceWei,
       optionSizeWei,
       premiumWei,
-      oracle
+      oracle,
+      payoffType || 'Linear'
     ]);
     
     res.json({
@@ -752,7 +756,8 @@ app.post('/api/option/create-put', async (req, res) => {
       optionSize,
       premium,
       oracle,
-      userAddress
+      userAddress,
+      payoffType
     } = req.body;
     
     if (!underlyingToken || !strikeToken || !oracle || !userAddress) {
@@ -786,7 +791,8 @@ app.post('/api/option/create-put', async (req, res) => {
       strikePriceWei,
       optionSizeWei,
       premiumWei,
-      oracle
+      oracle,
+      payoffType || 'Linear'
     ]);
     
     res.json({

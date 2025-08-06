@@ -77,6 +77,12 @@ const OptionStatus = styled.span`
     border: 1px solid rgba(168, 85, 247, 0.3);
   }
   
+  &.reclaimed {
+    background: rgba(59, 130, 246, 0.2);
+    color: #3b82f6;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+  }
+  
   &.not-engaged {
     background: rgba(147, 197, 253, 0.3);
     color: #93c5fd;
@@ -292,9 +298,9 @@ const OptionsMarket = () => {
       return { text: 'Unresolved', class: 'expired' };
     }
     
-    // Check if expired and resolved
-    if (option.expiry && option.expiry * 1000 < currentTime && option.isResolved) {
-      return { text: 'Expired', class: 'expired' };
+    // Check if expired and resolved but not exercised (means it was reclaimed)
+    if (option.expiry && option.expiry * 1000 < currentTime && option.isResolved && !option.isExercised) {
+      return { text: 'Reclaimed', class: 'reclaimed' };
     }
     
     if (option.isActive) return { text: 'Active', class: 'filled' };
@@ -615,7 +621,11 @@ const OptionsMarket = () => {
               <OptionCard key={index}>
                 <OptionHeader>
                   <OptionTitle>
-                    {option.type === 'call' ? 'Call Option' : option.type === 'put' ? 'Put Option' : `${option.underlyingSymbol || '2TK'}/${option.strikeSymbol || 'MTK'}`}
+                    {(() => {
+                      const payoffType = option.payoffType || 'Linear';
+                      const optionType = option.type === 'call' ? 'Call' : option.type === 'put' ? 'Put' : 'Option';
+                      return `${payoffType} ${optionType}`;
+                    })()}
                   </OptionTitle>
                   <OptionStatus className={status.class}>
                     {status.text}

@@ -5,10 +5,14 @@ import "@openzeppelin/contracts/proxy/Clones.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./CallOptionContract.sol";
 import "./PutOptionContract.sol";
+import "./QuadraticCallOption.sol";
+import "./QuadraticPutOption.sol";
 
 contract OptionsBook {
     address public callImpl;
     address public putImpl;
+    address public quadraticCallImpl;
+    address public quadraticPutImpl;
 
     uint256 public totalExercisedStrikeTokens;
 
@@ -39,6 +43,7 @@ contract OptionsBook {
         bool isResolved;
         address long;
         address short;
+        string payoffType; // Add payoff type field
     }
 
     mapping(address => OptionMeta) public optionMetadata;
@@ -46,9 +51,16 @@ contract OptionsBook {
     event OptionCreated(address indexed creator, address indexed instance, string optionType);
     event OptionExercised(address indexed option, uint256 strikeTokenAmount);
 
-    constructor(address _callImpl, address _putImpl) {
+    constructor(
+        address _callImpl, 
+        address _putImpl, 
+        address _quadraticCallImpl, 
+        address _quadraticPutImpl
+    ) {
         callImpl = _callImpl;
         putImpl = _putImpl;
+        quadraticCallImpl = _quadraticCallImpl;
+        quadraticPutImpl = _quadraticPutImpl;
     }
 
     function createAndFundCallOption(
@@ -59,29 +71,52 @@ contract OptionsBook {
         uint256 _strikePrice,
         uint256 _optionSize,
         uint256 _premium,
-        address _oracle
+        address _oracle,
+        string memory _payoffType
     ) external returns (address clone) {
-        clone = Clones.clone(callImpl);
-
-        CallOptionContract(clone).initialize(
-            msg.sender,
-            _underlyingToken,
-            _strikeToken,
-            _underlyingSymbol,
-            _strikeSymbol,
-            _strikePrice,
-            _optionSize,
-            _premium,
-            _oracle,
-            address(this)
-        );
+        // Choose implementation based on payoff type
+        if (keccak256(bytes(_payoffType)) == keccak256(bytes("Quadratic"))) {
+            clone = Clones.clone(quadraticCallImpl);
+            QuadraticCallOption(clone).initialize(
+                msg.sender,
+                _underlyingToken,
+                _strikeToken,
+                _underlyingSymbol,
+                _strikeSymbol,
+                _strikePrice,
+                _optionSize,
+                _premium,
+                _oracle,
+                address(this)
+            );
+        } else {
+            // Default to linear implementation
+            clone = Clones.clone(callImpl);
+            CallOptionContract(clone).initialize(
+                msg.sender,
+                _underlyingToken,
+                _strikeToken,
+                _underlyingSymbol,
+                _strikeSymbol,
+                _strikePrice,
+                _optionSize,
+                _premium,
+                _oracle,
+                address(this)
+            );
+        }
 
         require(
             IERC20(_underlyingToken).transferFrom(msg.sender, clone, _optionSize),
             "Token transfer failed"
         );
 
-        CallOptionContract(clone).fund();
+        // Call fund() using the appropriate interface
+        if (keccak256(bytes(_payoffType)) == keccak256(bytes("Quadratic"))) {
+            QuadraticCallOption(clone).fund();
+        } else {
+            CallOptionContract(clone).fund();
+        }
 
         callOptions.push(clone);
         isCallOption[clone] = true;
@@ -104,7 +139,8 @@ contract OptionsBook {
             isExercised: false,
             isResolved: false,
             long: address(0),
-            short: msg.sender
+            short: msg.sender,
+            payoffType: _payoffType
         });
 
         emit OptionCreated(msg.sender, clone, "CALL");
@@ -118,22 +154,40 @@ contract OptionsBook {
         uint256 _strikePrice,
         uint256 _optionSize,
         uint256 _premium,
-        address _oracle
+        address _oracle,
+        string memory _payoffType
     ) external returns (address clone) {
-        clone = Clones.clone(putImpl);
-
-        PutOptionContract(clone).initialize(
-            msg.sender,
-            _underlyingToken,
-            _strikeToken,
-            _underlyingSymbol,
-            _strikeSymbol,
-            _strikePrice,
-            _optionSize,
-            _premium,
-            _oracle,
-            address(this)
-        );
+        // Choose implementation based on payoff type
+        if (keccak256(bytes(_payoffType)) == keccak256(bytes("Quadratic"))) {
+            clone = Clones.clone(quadraticPutImpl);
+            QuadraticPutOption(clone).initialize(
+                msg.sender,
+                _underlyingToken,
+                _strikeToken,
+                _underlyingSymbol,
+                _strikeSymbol,
+                _strikePrice,
+                _optionSize,
+                _premium,
+                _oracle,
+                address(this)
+            );
+        } else {
+            // Default to linear implementation
+            clone = Clones.clone(putImpl);
+            PutOptionContract(clone).initialize(
+                msg.sender,
+                _underlyingToken,
+                _strikeToken,
+                _underlyingSymbol,
+                _strikeSymbol,
+                _strikePrice,
+                _optionSize,
+                _premium,
+                _oracle,
+                address(this)
+            );
+        }
 
         uint256 mtkToSend = (_optionSize * _strikePrice) / 1e18;
         require(
@@ -141,7 +195,12 @@ contract OptionsBook {
             "Strike token transfer failed"
         );
 
-        PutOptionContract(clone).fund();
+        // Call fund() using the appropriate interface
+        if (keccak256(bytes(_payoffType)) == keccak256(bytes("Quadratic"))) {
+            QuadraticPutOption(clone).fund();
+        } else {
+            PutOptionContract(clone).fund();
+        }
 
         putOptions.push(clone);
         isCallOption[clone] = false;
@@ -164,7 +223,8 @@ contract OptionsBook {
             isExercised: false,
             isResolved: false,
             long: address(0),
-            short: msg.sender
+            short: msg.sender,
+            payoffType: _payoffType
         });
 
         emit OptionCreated(msg.sender, clone, "PUT");

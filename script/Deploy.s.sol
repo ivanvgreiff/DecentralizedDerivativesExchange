@@ -4,6 +4,8 @@ pragma solidity ^0.8.20;
 import "forge-std/Script.sol";
 import "../contracts/CallOptionContract.sol";
 import "../contracts/PutOptionContract.sol";
+import "../contracts/QuadraticCallOption.sol";
+import "../contracts/QuadraticPutOption.sol";
 import "../contracts/OptionsBook.sol";
 
 contract DeployOptionContract is Script {
@@ -15,19 +17,28 @@ contract DeployOptionContract is Script {
 
         vm.startBroadcast();
 
-        // Deploy Put Option implementation with dummy values
+        // Deploy Linear Option implementations (existing)
+        CallOptionContract callImpl = new CallOptionContract();
         PutOptionContract putImpl = new PutOptionContract();
 
-        // Deploy Call Option implementation with dummy values
-        CallOptionContract callImpl = new CallOptionContract();
+        // Deploy Quadratic Option implementations (new)
+        QuadraticCallOption quadraticCallImpl = new QuadraticCallOption();
+        QuadraticPutOption quadraticPutImpl = new QuadraticPutOption();
 
-        // Deploy the OptionsBook factory with the above implementations
-        OptionsBook book = new OptionsBook(address(callImpl), address(putImpl));
+        // Deploy the OptionsBook factory with all implementations
+        OptionsBook book = new OptionsBook(
+            address(callImpl),
+            address(putImpl),
+            address(quadraticCallImpl),
+            address(quadraticPutImpl)
+        );
 
         vm.stopBroadcast();
 
-        console.log("PutOptionContract Impl: ", address(putImpl));
-        console.log("CallOptionContract Impl:", address(callImpl));
-        console.log("OptionsBook Factory:    ", address(book));
+        console.log("CallOptionContract Impl:     ", address(callImpl));
+        console.log("PutOptionContract Impl:      ", address(putImpl));
+        console.log("QuadraticCallOption Impl:    ", address(quadraticCallImpl));
+        console.log("QuadraticPutOption Impl:     ", address(quadraticPutImpl));
+        console.log("OptionsBook Factory:         ", address(book));
     }
 }

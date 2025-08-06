@@ -175,6 +175,7 @@ const CreateOption = () => {
     oracle: ''
   });
   const [optionType, setOptionType] = useState('call'); // 'call' or 'put'
+  const [payoffType, setPayoffType] = useState('Linear'); // 'Linear', 'Quadratic', 'Logarithmic'
   const [isCreating, setIsCreating] = useState(false);
   const [contractDeploymentInfo, setContractDeploymentInfo] = useState(null);
 
@@ -229,7 +230,8 @@ const CreateOption = () => {
       // Step 1: Get transaction data from backend
       const requestData = {
         ...formData,
-        userAddress: account
+        userAddress: account,
+        payoffType: payoffType
       };
       const endpoint = optionType === 'call' ? '/api/option/create-call' : '/api/option/create-put';
       const response = await axios.post(endpoint, requestData);
@@ -443,7 +445,7 @@ const CreateOption = () => {
     <CreateContainer>
       <Title>
         <Plus size={32} style={{ marginRight: '0.5rem' }} />
-        Create New {optionType === 'call' ? 'Call' : 'Put'} Option
+        Create New {payoffType} {optionType === 'call' ? 'Call' : 'Put'} Option
       </Title>
 
       <InfoBox>
@@ -481,6 +483,19 @@ const CreateOption = () => {
           >
             <option value="call">Call Option</option>
             <option value="put">Put Option</option>
+          </Select>
+        </FormGroup>
+
+        <FormGroup>
+          <Label>Payoff Type</Label>
+          <Select
+            value={payoffType}
+            onChange={(e) => setPayoffType(e.target.value)}
+            required
+          >
+            <option value="Linear">Linear</option>
+            <option value="Quadratic">Quadratic</option>
+            <option value="Logarithmic">Logarithmic</option>
           </Select>
         </FormGroup>
 

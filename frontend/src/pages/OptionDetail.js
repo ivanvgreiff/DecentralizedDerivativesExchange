@@ -1054,7 +1054,11 @@ const OptionDetail = () => {
          Back to Market
        </BackButton>
 
-      <Title>{optionData.optionType === 'CALL' ? 'Call Option' : optionData.optionType === 'PUT' ? 'Put Option' : 'Option'} Details</Title>
+      <Title>{(() => {
+        const payoffType = optionData.payoffType || 'Linear';
+        const optionType = optionData.optionType === 'CALL' ? 'Call' : optionData.optionType === 'PUT' ? 'Put' : 'Option';
+        return `${payoffType} ${optionType} Details`;
+      })()}</Title>
 
       <DetailCard>
         <DetailSection>
