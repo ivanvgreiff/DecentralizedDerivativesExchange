@@ -140,20 +140,15 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
 // Helper function to determine contract type and get appropriate ABI
 async function getContractTypeAndABI(contractAddress) {
   try {
-    console.log('🔍 Determining contract type for:', contractAddress);
     
     // First try to check if it's a known option in the OptionsBook
     const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
-    console.log('📋 OptionsBook contract created');
     
     const isCallOption = await optionsBookContract.isCallOption(contractAddress);
-    console.log('📊 Is call option:', isCallOption);
     
     if (isCallOption) {
-      console.log('✅ Returning call option ABI');
       return { type: 'call', abi: CallOptionContractABI };
     } else {
-      console.log('✅ Returning put option ABI');
       return { type: 'put', abi: PutOptionContractABI };
     }
   } catch (error) {
@@ -192,158 +187,91 @@ console.log('  PUT_OPTION_IMPL:', PUT_IMPL_ADDRESS);
 // Query current OptionsBook factory for all actual contracts
 app.get('/api/factory/all-contracts', async (req, res) => {
   try {
-    console.log('🔍 Factory endpoint called');
-    
     // Check cache first
     const now = Date.now();
     if (factoryCache.data && (now - factoryCache.timestamp) < factoryCache.ttl) {
-      console.log('📦 Returning cached factory data');
       return res.json(factoryCache.data);
     }
-    
-    console.log('Provider available:', !!provider);
-    console.log('OptionsBook address:', OPTIONSBOOK_ADDRESS);
     
     if (!provider) {
       return res.status(500).json({ error: 'Provider not initialized' });
     }
     
     const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
-    console.log('OptionsBook contract created');
     
-    // Get all call and put options from the CURRENT factory
-    console.log('Calling getAllCallOptions...');
-    const callOptions = await optionsBookContract.getAllCallOptions();
-    console.log('Call options:', callOptions);
+    // OPTIMIZED: Use single getAllOptionMetadata() call instead of 15+ RPC calls per option
+    const [allOptionMetadata, totalVolume] = await Promise.all([
+      optionsBookContract.getAllOptionMetadata(),
+      optionsBookContract.totalExercisedStrikeTokens()
+    ]);
     
-    console.log('Calling getAllPutOptions...');
-    const putOptions = await optionsBookContract.getAllPutOptions();
-    console.log('Put options:', putOptions);
+    console.log(`✅ Optimized RPC: Got ${allOptionMetadata.length} options in 2 calls instead of ${allOptionMetadata.length * 15 + 3} calls`);
+    console.log(`📊 Total volume from OptionsBook: ${totalVolume.toString()} wei (${(Number(totalVolume) / Math.pow(10, 18)).toFixed(6)} MTK)`);
     
-    // Get detailed info for each contract from current factory
-    const allContracts = [];
-    
-    for (let i = 0; i < callOptions.length; i++) {
-      const address = callOptions[i];
-      try {
-        // Add delay between contract queries to avoid rate limits
-        if (i > 0) {
-          // Removed delay since RPC calls now have retry mechanism with backoff
-        }
-        
-        const optionContract = new ethers.Contract(address, CallOptionContractABI, provider);
-        
-        // Use retry logic for blockchain calls
-        const contractData = await retryWithBackoff(async () => {
-          return Promise.all([
-            optionContract.short(),
-            optionContract.long(),
-            optionContract.isFunded(),
-            optionContract.isActive(),
-            optionContract.isExercised(),
-            optionContract.isResolved(),
-            optionContract.expiry(),
-            optionContract.strikePrice(),
-            optionContract.optionSize(),
-            optionContract.premium(),
-            optionContract.underlyingToken(),
-            optionContract.strikeToken(),
-            optionContract.underlyingSymbol(),
-            optionContract.strikeSymbol()
-          ]);
-        });
-        
-        const [short, long, isFunded, isActive, isExercised, isResolved, expiry, strikePrice, optionSize, premium, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol] = contractData;
-        
-        allContracts.push({
-          address,
-          type: 'call',
-          short,
-          long,
-          isFunded,
-          isActive,
-          isExercised,
-          isResolved,
-          expiry: expiry.toString(),
-          strikePrice: strikePrice.toString(),
-          optionSize: optionSize.toString(),
-          premium: premium.toString(),
-          underlyingToken,
-          strikeToken,
-          underlyingSymbol,
-          strikeSymbol
-        });
-      } catch (error) {
-        console.error(`Error querying call option ${address}:`, error.message);
+    // Transform OptionMeta structs to match expected frontend format
+    const currentTime = Math.floor(Date.now() / 1000);
+    const allContracts = allOptionMetadata.map(meta => {
+      // Determine if the option should be considered active/funded based on long position
+      const hasLongPosition = meta.long && meta.long !== '0x0000000000000000000000000000000000000000';
+      const isFunded = true; // OptionsBook ensures funded contracts
+      const isActive = hasLongPosition;
+      
+      // Check if option is expired and should be resolved
+      const isExpired = meta.expiry > 0 && currentTime > meta.expiry;
+      const needsResolution = isExpired && !meta.isResolved && !meta.isExercised;
+      
+      // Provide resolution status for frontend
+      let resolutionStatus = 'active';
+      if (!isExpired) {
+        resolutionStatus = 'active';
+      } else if (meta.isResolved) {
+        resolutionStatus = 'resolved';
+      } else if (meta.isExercised) {
+        resolutionStatus = 'exercised';
+      } else {
+        resolutionStatus = 'needs_resolution';
       }
-    }
+      
+      return {
+        address: meta.optionAddress,
+        type: meta.isCall ? 'call' : 'put',
+        optionType: meta.isCall ? 'CALL' : 'PUT', // For P&L calculations
+        short: meta.short,
+        long: meta.long,
+        isFunded,
+        isActive,
+        isExercised: meta.isExercised,
+        isResolved: meta.isResolved,
+        needsResolution,
+        resolutionStatus,
+        expiry: meta.expiry.toString(),
+        strikePrice: meta.strikePrice.toString(),
+        optionSize: meta.optionSize.toString(),
+        premium: meta.premium.toString(),
+        priceAtExpiry: meta.priceAtExpiry.toString(),
+        exercisedAmount: meta.exercisedAmount.toString(),
+        underlyingToken: meta.underlyingToken,
+        strikeToken: meta.strikeToken,
+        underlyingSymbol: meta.underlyingSymbol,
+        strikeSymbol: meta.strikeSymbol
+      };
+    });
     
-    for (let i = 0; i < putOptions.length; i++) {
-      const address = putOptions[i];
-      try {
-        // Add delay between contract queries to avoid rate limits
-        if (i > 0 || callOptions.length > 0) {
-          // Removed delay since RPC calls now have retry mechanism with backoff
-        }
-        
-        const optionContract = new ethers.Contract(address, PutOptionContractABI, provider);
-        
-        // Use retry logic for blockchain calls
-        const contractData = await retryWithBackoff(async () => {
-          return Promise.all([
-            optionContract.short(),
-            optionContract.long(),
-            optionContract.isFunded(),
-            optionContract.isActive(),
-            optionContract.isExercised(),
-            optionContract.isResolved(),
-            optionContract.expiry(),
-            optionContract.strikePrice(),
-            optionContract.optionSize(),
-            optionContract.premium(),
-            optionContract.underlyingToken(),
-            optionContract.strikeToken(),
-            optionContract.underlyingSymbol(),
-            optionContract.strikeSymbol()
-          ]);
-        });
-        
-        const [short, long, isFunded, isActive, isExercised, isResolved, expiry, strikePrice, optionSize, premium, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol] = contractData;
-        
-        allContracts.push({
-          address,
-          type: 'put',
-          short,
-          long,
-          isFunded,
-          isActive,
-          isExercised,
-          isResolved,
-          expiry: expiry.toString(),
-          strikePrice: strikePrice.toString(),
-          optionSize: optionSize.toString(),
-          premium: premium.toString(),
-          underlyingToken,
-          strikeToken,
-          underlyingSymbol,
-          strikeSymbol
-        });
-      } catch (error) {
-        console.error(`Error querying put option ${address}:`, error.message);
-      }
-    }
+    // Count options by type for backwards compatibility
+    const callOptionsCount = allContracts.filter(c => c.type === 'call').length;
+    const putOptionsCount = allContracts.filter(c => c.type === 'put').length;
     
     const responseData = { 
       optionsBookAddress: OPTIONSBOOK_ADDRESS,
-      callOptionsCount: callOptions.length,
-      putOptionsCount: putOptions.length,
+      callOptionsCount,
+      putOptionsCount,
+      totalVolume: totalVolume.toString(),
       contracts: allContracts
     };
     
     // Cache the response
     factoryCache.data = responseData;
     factoryCache.timestamp = now;
-    console.log('💾 Cached factory data');
     
     res.json(responseData);
   } catch (error) {
@@ -356,8 +284,79 @@ app.get('/api/factory/all-contracts', async (req, res) => {
 app.post('/api/factory/clear-cache', (req, res) => {
   factoryCache.data = null;
   factoryCache.timestamp = 0;
-  console.log('🗑️ Factory cache cleared');
   res.json({ success: true, message: 'Cache cleared' });
+});
+
+// Debug endpoint to check total volume directly
+app.get('/api/debug/total-volume', async (req, res) => {
+  try {
+    if (!provider) {
+      return res.status(500).json({ error: 'Provider not initialized' });
+    }
+    
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    const totalVolume = await optionsBookContract.totalExercisedStrikeTokens();
+    
+    res.json({
+      success: true,
+      totalVolumeWei: totalVolume.toString(),
+      totalVolumeMTK: (Number(totalVolume) / Math.pow(10, 18)).toFixed(6),
+      optionsBookAddress: OPTIONSBOOK_ADDRESS,
+      timestamp: Date.now()
+    });
+  } catch (error) {
+    console.error('Error fetching total volume directly:', error);
+    res.status(500).json({ error: 'Failed to fetch total volume', details: error.message });
+  }
+});
+
+// Debug endpoint to simulate exact frontend logic
+app.get('/api/debug/frontend-volume-logic', async (req, res) => {
+  try {
+    // Get the same data that the main endpoint returns
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    const [allOptionMetadata, totalVolume] = await Promise.all([
+      optionsBookContract.getAllOptionMetadata(),
+      optionsBookContract.totalExercisedStrikeTokens()
+    ]);
+    
+    // Simulate the response format
+    const mockResponse = {
+      totalVolume: totalVolume.toString()
+    };
+    
+    console.log('📊 Frontend simulation debug:', {
+      responseData: mockResponse,
+      totalVolumeRaw: mockResponse.totalVolume,
+      totalVolumeType: typeof mockResponse.totalVolume
+    });
+    
+    // Use direct total volume from OptionsBook contract (already in wei)
+    const totalVolumeWei = mockResponse.totalVolume || '0';
+    
+    // Convert from wei to MTK for display
+    const totalVolumeNumber = parseFloat(totalVolumeWei);
+    const volumeInMTK = totalVolumeNumber / Math.pow(10, 18);
+    
+    console.log('📊 Frontend volume conversion debug:', {
+      totalVolumeWei,
+      totalVolumeNumber,
+      volumeInMTK,
+      finalDisplay: volumeInMTK.toFixed(2)
+    });
+    
+    res.json({
+      success: true,
+      totalVolumeWei,
+      totalVolumeNumber,
+      volumeInMTK,
+      finalDisplay: volumeInMTK.toFixed(2),
+      directFromContract: totalVolume.toString()
+    });
+  } catch (error) {
+    console.error('Error in frontend logic simulation:', error);
+    res.status(500).json({ error: 'Failed to simulate frontend logic', details: error.message });
+  }
 });
 
 // New resolution service with database
@@ -515,123 +514,132 @@ app.get('/api/option/:contractAddress', async (req, res) => {
     const { contractAddress } = req.params;
     console.log('🔍 Fetching option details for:', contractAddress);
     
-    const { abi: contractABI } = await getContractTypeAndABI(contractAddress);
-    console.log('📋 Contract ABI determined');
+    // OPTIMIZED: Use OptionsBook.getOptionMeta() instead of 18 individual RPC calls
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
     
-    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
-    console.log('📄 Option contract instance created');
-    
-    // Try to fetch basic contract info first to check if contract is accessible
+    let optionMeta;
     try {
-      console.log('🔍 Testing contract accessibility...');
-      await optionContract.short();
-      console.log('✅ Contract is accessible');
-    } catch (accessError) {
-      console.error('❌ Contract is not accessible:', accessError.message);
+      // Single RPC call to get all option metadata
+      optionMeta = await optionsBookContract.getOptionMeta(contractAddress);
+      console.log('✅ Optimized RPC: Got option details in 1 call instead of 18 calls');
+    } catch (metaError) {
+      console.error('❌ Failed to get option metadata from OptionsBook:', metaError.message);
       return res.status(404).json({ 
-        error: 'Contract not found or not accessible',
-        details: 'The contract address does not exist or is not a valid option contract'
+        error: 'Option not found in OptionsBook',
+        details: 'The contract address does not exist in the OptionsBook registry'
       });
     }
     
-    // Fetch ALL contract data in a single batched RPC call to reduce network requests from 18 to 1
-    console.log('🔍 Fetching all contract data in single batch...');
-    
-    // Retry function with exponential backoff for rate limit errors
-    const fetchWithRetry = async (retryCount = 0) => {
-      try {
-        return await Promise.all([
-          // Basic contract data (6 calls)
-          optionContract.short(),
-          optionContract.long(),
-          optionContract.underlyingToken(),
-          optionContract.strikeToken(),
-          optionContract.underlyingSymbol(),
-          optionContract.strikeSymbol(),
-          // Option parameters (4 calls)
-          optionContract.strikePrice(),
-          optionContract.optionSize(),
-          optionContract.premium(),
-          optionContract.expiry(),
-          // Option state (4 calls)
-          optionContract.isActive(),
-          optionContract.isExercised(),
-          optionContract.isFunded(),
-          optionContract.isResolved(),
-          // Oracle data (4 calls)
-          optionContract.oracle(),
-          optionContract.priceAtExpiry(),
-          optionContract.optionType(),
-          optionContract.getOracleAddress()
-        ]);
-      } catch (error) {
-        // Check if it's a rate limit error (-32005) and we haven't exceeded max retries
-        if ((error.message.includes('Too Many Requests') || error.code === -32005) && retryCount < 3) {
-          const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 10000); // Max 10 seconds
-          console.log(`⏳ Rate limited, retrying in ${backoffDelay}ms (attempt ${retryCount + 1}/3)...`);
-          
-          await new Promise(resolve => setTimeout(resolve, backoffDelay));
-          return fetchWithRetry(retryCount + 1);
+    // Handle case where option metadata might not be available (for older contracts)
+    if (!optionMeta || optionMeta.optionAddress === '0x0000000000000000000000000000000000000000') {
+      console.warn('⚠️ Option metadata not found, falling back to individual contract calls');
+      
+      // Fallback to individual contract calls for older contracts not in metadata
+      const { abi: contractABI } = await getContractTypeAndABI(contractAddress);
+      const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
+      
+      const fetchWithRetry = async (retryCount = 0) => {
+        try {
+          return await Promise.all([
+            optionContract.short(),
+            optionContract.long(),
+            optionContract.underlyingToken(),
+            optionContract.strikeToken(),
+            optionContract.underlyingSymbol(),
+            optionContract.strikeSymbol(),
+            optionContract.strikePrice(),
+            optionContract.optionSize(),
+            optionContract.premium(),
+            optionContract.expiry(),
+            optionContract.isActive(),
+            optionContract.isExercised(),
+            optionContract.isFunded(),
+            optionContract.isResolved(),
+            optionContract.oracle(),
+            optionContract.priceAtExpiry(),
+            optionContract.optionType(),
+            optionContract.getOracleAddress()
+          ]);
+        } catch (error) {
+          if ((error.message.includes('Too Many Requests') || error.code === -32005) && retryCount < 3) {
+            const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 10000);
+            console.log(`⏳ Rate limited, retrying in ${backoffDelay}ms (attempt ${retryCount + 1}/3)...`);
+            await new Promise(resolve => setTimeout(resolve, backoffDelay));
+            return fetchWithRetry(retryCount + 1);
+          }
+          throw error;
         }
-        throw error;
+      };
+      
+      try {
+        const [
+          short, long, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol,
+          strikePrice, optionSize, premium, expiry, isActive, isExercised, 
+          isFunded, isResolved, oracle, priceAtExpiry, optionType, oracleAddress
+        ] = await fetchWithRetry();
+        
+        // Transform to match expected format
+        optionMeta = {
+          optionAddress: contractAddress,
+          isCall: optionType === 'CALL',
+          underlyingToken, strikeToken, underlyingSymbol, strikeSymbol,
+          strikePrice, optionSize, premium, expiry, 
+          priceAtExpiry, exercisedAmount: 0,
+          isExercised, isResolved, long, short
+        };
+        
+      } catch (error) {
+        console.error('Error fetching contract data:', error.message);
+        return res.status(500).json({ 
+          error: 'Failed to fetch contract data',
+          details: error.message 
+        });
       }
-    };
+    }
     
-    let short, long, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol;
-    let strikePrice, optionSize, premium, expiry, isActive, isExercised, isFunded;
-    let isResolved, oracle, priceAtExpiry, optionType, oracleAddress;
+    // Determine active/funded state from metadata
+    const hasLongPosition = optionMeta.long && optionMeta.long !== '0x0000000000000000000000000000000000000000';
+    const isFunded = true; // OptionsBook ensures all registered contracts are funded
+    const isActive = hasLongPosition;
     
-    try {
-      [
-        short,
-        long,
-        underlyingToken,
-        strikeToken,
-        underlyingSymbol,
-        strikeSymbol,
-        strikePrice,
-        optionSize,
-        premium,
-        expiry,
-        isActive,
-        isExercised,
-        isFunded,
-        isResolved,
-        oracle,
-        priceAtExpiry,
-        optionType,
-        oracleAddress
-      ] = await fetchWithRetry();
+    // Check resolution status
+    const currentTime = Math.floor(Date.now() / 1000);
+    const isExpired = optionMeta.expiry > 0 && currentTime > optionMeta.expiry;
+    const needsResolution = isExpired && !optionMeta.isResolved && !optionMeta.isExercised;
     
-      console.log('✅ All contract data fetched successfully in single batch');
-    } catch (error) {
-      console.error('❌ Error fetching contract data in batch after retries:', error.message);
-      return res.status(500).json({ 
-        error: 'Failed to fetch contract data',
-        details: error.message 
-      });
+    let resolutionStatus = 'active';
+    if (!isExpired) {
+      resolutionStatus = 'active';
+    } else if (optionMeta.isResolved) {
+      resolutionStatus = 'resolved';
+    } else if (optionMeta.isExercised) {
+      resolutionStatus = 'exercised';
+    } else {
+      resolutionStatus = 'needs_resolution';
     }
     
     res.json({
-      contractAddress,
-      short,
-      long,
-      underlyingToken,
-      strikeToken,
-      underlyingSymbol,
-      strikeSymbol,
-      strikePrice: strikePrice.toString(),
-      optionSize: optionSize.toString(),
-      premium: premium.toString(),
-      expiry: expiry.toString(),
+      contractAddress: optionMeta.optionAddress,
+      short: optionMeta.short,
+      long: optionMeta.long,
+      underlyingToken: optionMeta.underlyingToken,
+      strikeToken: optionMeta.strikeToken,
+      underlyingSymbol: optionMeta.underlyingSymbol,
+      strikeSymbol: optionMeta.strikeSymbol,
+      strikePrice: optionMeta.strikePrice.toString(),
+      optionSize: optionMeta.optionSize.toString(),
+      premium: optionMeta.premium.toString(),
+      expiry: optionMeta.expiry.toString(),
       isActive,
-      isExercised,
+      isExercised: optionMeta.isExercised,
       isFunded,
-      oracle: oracleAddress,
+      oracle: optionMeta.underlyingToken, // Fallback, will be overridden if individual calls were made
       optionsBook: OPTIONSBOOK_ADDRESS,
-      priceAtExpiry: priceAtExpiry.toString(),
-      isResolved,
-      optionType
+      priceAtExpiry: optionMeta.priceAtExpiry.toString(),
+      isResolved: optionMeta.isResolved,
+      needsResolution,
+      resolutionStatus,
+      optionType: optionMeta.isCall ? 'CALL' : 'PUT'
     });
   } catch (error) {
     console.error('❌ Error fetching option details:', error);
@@ -809,11 +817,16 @@ app.post('/api/option/create-put', async (req, res) => {
   }
 });
 
-// Fund option contract (approval should already be done during creation)
+// Fund option contract (approval should already be done during creation) - optimized
 app.post('/api/option/:contractAddress/fund', async (req, res) => {
   try {
     const { contractAddress } = req.params;
-    const { abi: contractABI } = await getContractTypeAndABI(contractAddress);
+    
+    // OPTIMIZED: Use OptionsBook metadata to determine contract type (1 call instead of checking type)
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    const optionMeta = await optionsBookContract.getOptionMeta(contractAddress);
+    
+    const contractABI = optionMeta.isCall ? CallOptionContractABI : PutOptionContractABI;
     const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
     
     // Prepare fund transaction data
@@ -834,7 +847,7 @@ app.post('/api/option/:contractAddress/fund', async (req, res) => {
   }
 });
 
-// Enter as long (buy option) - simple direct contract call
+// Enter as long (buy option) - optimized with OptionsBook metadata
 app.post('/api/option/:contractAddress/enter', async (req, res) => {
   try {
     const { contractAddress } = req.params;
@@ -848,24 +861,19 @@ app.post('/api/option/:contractAddress/enter', async (req, res) => {
     }
     
     console.log('Processing enter request for contract:', contractAddress);
-    const { abi: contractABI } = await getContractTypeAndABI(contractAddress);
-    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
     
-    // Bundle contract detail calls to reduce RPC requests
-    const [strikeToken, premium] = await Promise.all([
-      optionContract.strikeToken(),
-      optionContract.premium()
-    ]);
+    // OPTIMIZED: Use OptionsBook metadata instead of individual contract calls (3 calls → 1 call)
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    const optionMeta = await optionsBookContract.getOptionMeta(contractAddress);
     
-    console.log('Strike token:', strikeToken);
-    console.log('Premium:', premium.toString());
+    console.log('Strike token:', optionMeta.strikeToken);
+    console.log('Premium:', optionMeta.premium.toString());
     
     // Prepare approve transaction data (approve OptionsBook to spend premium)
-    const tokenContract = new ethers.Contract(strikeToken, MTKABI, provider);
-    const approveData = tokenContract.interface.encodeFunctionData('approve', [OPTIONSBOOK_ADDRESS, premium]);
+    const tokenContract = new ethers.Contract(optionMeta.strikeToken, MTKABI, provider);
+    const approveData = tokenContract.interface.encodeFunctionData('approve', [OPTIONSBOOK_ADDRESS, optionMeta.premium]);
     
     // Prepare enterAndPayPremium transaction data (call OptionsBook, not individual contract)
-    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
     const enterData = optionsBookContract.interface.encodeFunctionData('enterAndPayPremium', [contractAddress]);
     
     // Return both transactions for the frontend to execute separately
@@ -874,7 +882,7 @@ app.post('/api/option/:contractAddress/enter', async (req, res) => {
       message: 'Enter as long transactions prepared for MetaMask signing',
       data: {
         approveTransaction: {
-          to: strikeToken,
+          to: optionMeta.strikeToken,
           data: approveData,
           value: '0x0'
         },
@@ -883,8 +891,8 @@ app.post('/api/option/:contractAddress/enter', async (req, res) => {
           data: enterData,
           value: '0x0'
         },
-        premiumToken: strikeToken,
-        premiumAmount: premium.toString(),
+        premiumToken: optionMeta.strikeToken,
+        premiumAmount: optionMeta.premium.toString(),
         optionsBookAddress: OPTIONSBOOK_ADDRESS
       }
     });
@@ -902,7 +910,7 @@ app.post('/api/option/:contractAddress/enter', async (req, res) => {
 
 // Resolve option
 
-// Exercise option - simple direct contract call
+// Exercise option - optimized with OptionsBook metadata
 app.post('/api/option/:contractAddress/exercise', async (req, res) => {
   try {
     const { contractAddress } = req.params;
@@ -910,11 +918,11 @@ app.post('/api/option/:contractAddress/exercise', async (req, res) => {
     
     console.log('Processing exercise request for contract:', contractAddress);
     
-    const { abi: contractABI, type: contractType } = await getContractTypeAndABI(contractAddress);
-    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
+    // OPTIMIZED: Use OptionsBook metadata instead of individual contract calls (2 calls → 1 call)
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    const optionMeta = await optionsBookContract.getOptionMeta(contractAddress);
     
-    // Get contract details to determine strike token
-    const strikeToken = await optionContract.strikeToken();
+    const contractType = optionMeta.isCall ? 'call' : 'put';
     
     // Determine amount and parameter name based on contract type
     let amountWei, amountParam, logMessage;
@@ -934,14 +942,16 @@ app.post('/api/option/:contractAddress/exercise', async (req, res) => {
     }
     
     console.log(logMessage);
-    console.log('Strike token:', strikeToken);
+    console.log('Strike token:', optionMeta.strikeToken);
     console.log('Amount (wei):', amountWei.toString());
     
     // Prepare approve transaction data
-    const tokenContract = new ethers.Contract(strikeToken, MTKABI, provider);
+    const tokenContract = new ethers.Contract(optionMeta.strikeToken, MTKABI, provider);
     const approveData = tokenContract.interface.encodeFunctionData('approve', [contractAddress, amountWei]);
     
     // Prepare exercise transaction data
+    const contractABI = optionMeta.isCall ? CallOptionContractABI : PutOptionContractABI;
+    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
     const exerciseData = optionContract.interface.encodeFunctionData('exercise', [amountWei]);
     
     // Return both transactions for the frontend to execute separately
@@ -950,7 +960,7 @@ app.post('/api/option/:contractAddress/exercise', async (req, res) => {
       message: 'Exercise transactions prepared for MetaMask signing',
       data: {
         approveTransaction: {
-          to: strikeToken,
+          to: optionMeta.strikeToken,
           data: approveData,
           value: '0x0'
         },
@@ -959,7 +969,7 @@ app.post('/api/option/:contractAddress/exercise', async (req, res) => {
           data: exerciseData,
           value: '0x0'
         },
-        strikeToken: strikeToken,
+        strikeToken: optionMeta.strikeToken,
         amount: amountWei.toString(),
         contractType: contractType,
         contractAddress: contractAddress
@@ -975,77 +985,61 @@ app.post('/api/option/:contractAddress/exercise', async (req, res) => {
   }
 });
 
-// Exercise option - calls resolve() then exercise() on the individual contract
+// Exercise option - calls resolve() then exercise() on the individual contract - optimized
 app.post('/api/option/:contractAddress/resolveAndExercise', async (req, res) => {
   try {
     const { contractAddress } = req.params;
-    const { mtkAmount } = req.body;
+    const { mtkAmount, twoTkAmount } = req.body;
     
     console.log('Processing resolveAndExercise request for contract:', contractAddress);
     
-    // Determine contract type and get appropriate ABI
-    const { abi: contractABI, type: contractType } = await getContractTypeAndABI(contractAddress);
-    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
+    // OPTIMIZED: Use OptionsBook metadata instead of 8 individual contract calls (8 calls → 1 call)
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    const optionMeta = await optionsBookContract.getOptionMeta(contractAddress);
     
-    // Get option state for debugging with retry mechanism
-    const fetchContractDataWithRetry = async (retryCount = 0) => {
-      try {
-        return await Promise.all([
-          optionContract.long(),
-          optionContract.isActive(),
-          optionContract.isExercised(),
-          optionContract.isResolved(),
-          optionContract.expiry(),
-          optionContract.strikePrice(),
-          optionContract.priceAtExpiry()
-        ]);
-      } catch (error) {
-        // Check if it's a rate limit error (-32005) and we haven't exceeded max retries
-        if ((error.message.includes('Too Many Requests') || error.code === -32005) && retryCount < 3) {
-          const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 10000); // Max 10 seconds
-          console.log(`⏳ Rate limited in resolveAndExercise, retrying in ${backoffDelay}ms (attempt ${retryCount + 1}/3)...`);
-          
-          await new Promise(resolve => setTimeout(resolve, backoffDelay));
-          return fetchContractDataWithRetry(retryCount + 1);
-        }
-        throw error;
-      }
-    };
-    
-    const [long, isActive, isExercised, isResolved, expiry, strikePrice, priceAtExpiry] = await fetchContractDataWithRetry();
-    
+    const contractType = optionMeta.isCall ? 'call' : 'put';
     const currentTime = Math.floor(Date.now() / 1000);
     
     console.log('Option state check:', {
       contractAddress,
-      long,
-      isActive,
-      isExercised,
-      isResolved,
-      expiry: expiry.toString(),
-      strikePrice: strikePrice.toString(),
-      priceAtExpiry: priceAtExpiry.toString(),
+      long: optionMeta.long,
+      isExercised: optionMeta.isExercised,
+      isResolved: optionMeta.isResolved,
+      expiry: optionMeta.expiry.toString(),
+      strikePrice: optionMeta.strikePrice.toString(),
+      priceAtExpiry: optionMeta.priceAtExpiry.toString(),
       currentTime,
-      isExpired: Number(expiry) <= currentTime,
-      isProfitable: Number(priceAtExpiry) > Number(strikePrice)
+      isExpired: Number(optionMeta.expiry) <= currentTime,
+      isProfitable: contractType === 'call' ? 
+        Number(optionMeta.priceAtExpiry) > Number(optionMeta.strikePrice) :
+        Number(optionMeta.priceAtExpiry) < Number(optionMeta.strikePrice)
     });
     
-    // Convert amount to wei
-    const amountWei = ethers.parseUnits(mtkAmount.toString(), 18);
+    let amountWei, tokenToApprove, approveTokenContract;
+    
+    if (contractType === 'call') {
+      // CALL: User sends MTK to buy 2TK
+      amountWei = ethers.parseUnits(mtkAmount.toString(), 18);
+      tokenToApprove = optionMeta.strikeToken; // MTK
+      approveTokenContract = new ethers.Contract(optionMeta.strikeToken, MTKABI, provider);
+      
+      console.log('CALL - MTK amount to spend:', mtkAmount);
+    } else {
+      // PUT: User sends 2TK to sell for MTK
+      amountWei = ethers.parseUnits(twoTkAmount.toString(), 18);
+      tokenToApprove = optionMeta.underlyingToken; // 2TK
+      approveTokenContract = new ethers.Contract(optionMeta.underlyingToken, TwoTKABI, provider);
+      
+      console.log('PUT - 2TK amount to sell:', twoTkAmount);
+    }
     
     console.log('Contract address:', contractAddress);
-    console.log('MTK amount to spend:', mtkAmount);
     console.log('Amount (wei):', amountWei.toString());
     
-    // Get strike token for approval
-    const strikeToken = await optionContract.strikeToken();
+    // Prepare approve transaction (user needs to approve OptionsBook to spend the correct token)
+    const approveData = approveTokenContract.interface.encodeFunctionData('approve', [OPTIONSBOOK_ADDRESS, amountWei]);
     
-    // Prepare approve transaction (user needs to approve OptionsBook to spend MTK)
-    const tokenContract = new ethers.Contract(strikeToken, MTKABI, provider);
-    const approveData = tokenContract.interface.encodeFunctionData('approve', [OPTIONSBOOK_ADDRESS, amountWei]);
-    
-    // Prepare resolveAndExercise transaction (call OptionsBook, not individual contract)
-    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    // Prepare resolveAndExercise transaction (call OptionsBook)
     const resolveAndExerciseData = optionsBookContract.interface.encodeFunctionData('resolveAndExercise', [contractAddress, amountWei]);
     
     // Return both transactions for the frontend to execute sequentially
@@ -1054,7 +1048,7 @@ app.post('/api/option/:contractAddress/resolveAndExercise', async (req, res) => 
       message: 'Resolve and exercise transactions prepared for MetaMask signing',
       data: {
         approveTransaction: {
-          to: strikeToken,
+          to: tokenToApprove,
           data: approveData,
           value: '0x0'
         },
@@ -1063,7 +1057,7 @@ app.post('/api/option/:contractAddress/resolveAndExercise', async (req, res) => 
           data: resolveAndExerciseData,
           value: '0x0'
         },
-        strikeToken: strikeToken,
+        tokenToApprove: tokenToApprove,
         amount: amountWei.toString(),
         contractType: contractType,
         contractAddress: contractAddress
@@ -1079,7 +1073,7 @@ app.post('/api/option/:contractAddress/resolveAndExercise', async (req, res) => 
   }
 });
 
-// Reclaim option - calls resolveAndReclaim() on the OptionsBook contract (for short position holders)
+// Reclaim option - calls resolveAndReclaim() on the OptionsBook contract (for short position holders) - optimized
 app.post('/api/option/:contractAddress/reclaim', async (req, res) => {
   try {
     const { contractAddress } = req.params;
@@ -1094,54 +1088,20 @@ app.post('/api/option/:contractAddress/reclaim', async (req, res) => {
       });
     }
     
-    // Get option contract details to verify this is a valid option
-    const { abi: contractABI } = await getContractTypeAndABI(contractAddress);
-    const optionContract = new ethers.Contract(contractAddress, contractABI, provider);
-    
-    // Get option state for debugging with retry logic
-    const contractStateData = await retryWithBackoff(async () => {
-      return Promise.all([
-        optionContract.short(),
-        optionContract.isActive(),
-        optionContract.isExercised(),
-        optionContract.isResolved(),
-        optionContract.expiry()
-      ]);
-    });
-    
-    const [short, isActive, isExercised, isResolved, expiry] = contractStateData;
+    // OPTIMIZED: Use OptionsBook metadata instead of 8 individual contract calls (8 calls → 1 call)
+    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
+    const optionMeta = await optionsBookContract.getOptionMeta(contractAddress);
     
     const currentTime = Math.floor(Date.now() / 1000);
     
     console.log('Option state check for reclaim:', {
       contractAddress,
-      short,
-      isActive,
-      isExercised,
-      isResolved,
-      expiry: expiry.toString(),
+      short: optionMeta.short,
+      isExercised: optionMeta.isExercised,
+      isResolved: optionMeta.isResolved,
+      expiry: optionMeta.expiry.toString(),
       currentTime,
-      isExpired: Number(expiry) <= currentTime
-    });
-    
-    // Create OptionsBook contract instance for the reclaim call
-    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
-    
-    // Additional debugging - check OptionsBook state with retry logic
-    const optionsBookData = await retryWithBackoff(async () => {
-      return Promise.all([
-        optionsBookContract.isKnownOption(contractAddress),
-        optionsBookContract.shortPosition(contractAddress)
-      ]);
-    });
-    
-    const [isKnownOption, shortPositionFromBook] = optionsBookData;
-    
-    console.log('OptionsBook state check:', {
-      isKnownOption,
-      shortPositionFromBook,
-      shortFromContract: short,
-      addressesMatch: shortPositionFromBook.toLowerCase() === short.toLowerCase()
+      isExpired: Number(optionMeta.expiry) <= currentTime
     });
     
     // Prepare resolveAndReclaim transaction data
@@ -1364,143 +1324,9 @@ app.post('/api/contracts/:contractAddress/exercised', async (req, res) => {
 // Test route to isolate the issue
 
 
-// Get all contracts from blockchain (uses same logic as factory endpoint)
-app.get('/api/contracts/all', async (req, res) => {
-  console.log('GET /api/contracts/all - Using blockchain factory logic');
-  
-  try {
-    if (!provider) {
-      return res.status(500).json({ error: 'Provider not initialized' });
-    }
-    
-    const optionsBookContract = new ethers.Contract(OPTIONSBOOK_ADDRESS, OptionsBookABI, provider);
-    
-    // Get all call and put options from the OptionsBook
-    const callOptions = await optionsBookContract.getAllCallOptions();
-    const putOptions = await optionsBookContract.getAllPutOptions();
-    
-    // Get detailed info for each contract
-    const allContracts = [];
-    
-    // Process call options
-    for (let i = 0; i < callOptions.length; i++) {
-      const address = callOptions[i];
-      try {
-        // Removed delay since RPC calls now have retry mechanism with backoff
-        
-        const optionContract = new ethers.Contract(address, CallOptionContractABI, provider);
-        const contractData = await retryWithBackoff(async () => {
-          return Promise.all([
-            optionContract.short(),
-            optionContract.long(),
-            optionContract.isFunded(),
-            optionContract.isActive(),
-            optionContract.isExercised(),
-            optionContract.isResolved(),
-            optionContract.expiry(),
-            optionContract.strikePrice(),
-            optionContract.optionSize(),
-            optionContract.premium(),
-            optionContract.underlyingToken(),
-            optionContract.strikeToken(),
-            optionContract.underlyingSymbol(),
-            optionContract.strikeSymbol()
-          ]);
-        });
-        
-        const [short, long, isFunded, isActive, isExercised, isResolved, expiry, strikePrice, optionSize, premium, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol] = contractData;
-        
-        allContracts.push({
-          address,
-          type: 'call',
-          short,
-          long,
-          isFunded,
-          isActive,
-          isExercised,
-          isResolved,
-          expiry: expiry.toString(),
-          strikePrice: strikePrice.toString(),
-          optionSize: optionSize.toString(),
-          premium: premium.toString(),
-          underlyingToken,
-          strikeToken,
-          underlyingSymbol,
-          strikeSymbol
-        });
-      } catch (error) {
-        console.error(`Error querying call option ${address}:`, error.message);
-      }
-    }
-    
-    // Process put options (similar logic)
-    for (let i = 0; i < putOptions.length; i++) {
-      const address = putOptions[i];
-      try {
-        // Removed delay since RPC calls now have retry mechanism with backoff
-        
-        const optionContract = new ethers.Contract(address, PutOptionContractABI, provider);
-        const contractData = await retryWithBackoff(async () => {
-          return Promise.all([
-            optionContract.short(),
-            optionContract.long(),
-            optionContract.isFunded(),
-            optionContract.isActive(),
-            optionContract.isExercised(),
-            optionContract.isResolved(),
-            optionContract.expiry(),
-            optionContract.strikePrice(),
-            optionContract.optionSize(),
-            optionContract.premium(),
-            optionContract.underlyingToken(),
-            optionContract.strikeToken(),
-            optionContract.underlyingSymbol(),
-            optionContract.strikeSymbol()
-          ]);
-        });
-        
-        const [short, long, isFunded, isActive, isExercised, isResolved, expiry, strikePrice, optionSize, premium, underlyingToken, strikeToken, underlyingSymbol, strikeSymbol] = contractData;
-        
-        allContracts.push({
-          address,
-          type: 'put',
-          short,
-          long,
-          isFunded,
-          isActive,
-          isExercised,
-          isResolved,
-          expiry: expiry.toString(),
-          strikePrice: strikePrice.toString(),
-          optionSize: optionSize.toString(),
-          premium: premium.toString(),
-          underlyingToken,
-          strikeToken,
-          underlyingSymbol,
-          strikeSymbol
-        });
-      } catch (error) {
-        console.error(`Error querying put option ${address}:`, error.message);
-      }
-    }
-    
-    res.json({ contracts: allContracts });
-  } catch (error) {
-    console.error('Error fetching contracts from blockchain:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch contracts from blockchain',
-      details: error.message 
-    });
-  }
-});
 
 
-// Debug: List all registered routes
-app._router.stack.forEach(function(r){
-  if (r.route && r.route.path){
-    console.log('Registered route:', r.route.path, Object.keys(r.route.methods));
-  }
-});
+// Routes registered silently
 
 // Start server
 app.listen(PORT, async () => {

@@ -19,8 +19,29 @@ contract OptionsBook {
     mapping(address => bool) public isCallOption;
     mapping(address => bool) public isKnownClone;
 
-    mapping(address => address) public longPosition;  // option => long address
-    mapping(address => address) public shortPosition; // option => short address
+    mapping(address => address) public longPosition;
+    mapping(address => address) public shortPosition;
+
+    struct OptionMeta {
+        address optionAddress;
+        bool isCall;
+        address underlyingToken;
+        address strikeToken;
+        string underlyingSymbol;
+        string strikeSymbol;
+        uint256 strikePrice;
+        uint256 optionSize;
+        uint256 premium;
+        uint256 expiry;
+        uint256 priceAtExpiry;
+        uint256 exercisedAmount;
+        bool isExercised;
+        bool isResolved;
+        address long;
+        address short;
+    }
+
+    mapping(address => OptionMeta) public optionMetadata;
 
     event OptionCreated(address indexed creator, address indexed instance, string optionType);
     event OptionExercised(address indexed option, uint256 strikeTokenAmount);
@@ -62,11 +83,29 @@ contract OptionsBook {
 
         CallOptionContract(clone).fund();
 
-        // Register only after success
         callOptions.push(clone);
         isCallOption[clone] = true;
         isKnownClone[clone] = true;
         shortPosition[clone] = msg.sender;
+
+        optionMetadata[clone] = OptionMeta({
+            optionAddress: clone,
+            isCall: true,
+            underlyingToken: _underlyingToken,
+            strikeToken: _strikeToken,
+            underlyingSymbol: _underlyingSymbol,
+            strikeSymbol: _strikeSymbol,
+            strikePrice: _strikePrice,
+            optionSize: _optionSize,
+            premium: _premium,
+            expiry: 0,
+            priceAtExpiry: 0,
+            exercisedAmount: 0,
+            isExercised: false,
+            isResolved: false,
+            long: address(0),
+            short: msg.sender
+        });
 
         emit OptionCreated(msg.sender, clone, "CALL");
     }
@@ -97,7 +136,6 @@ contract OptionsBook {
         );
 
         uint256 mtkToSend = (_optionSize * _strikePrice) / 1e18;
-
         require(
             IERC20(_strikeToken).transferFrom(msg.sender, clone, mtkToSend),
             "Strike token transfer failed"
@@ -105,11 +143,29 @@ contract OptionsBook {
 
         PutOptionContract(clone).fund();
 
-        // Register only after success
         putOptions.push(clone);
         isCallOption[clone] = false;
         isKnownClone[clone] = true;
         shortPosition[clone] = msg.sender;
+
+        optionMetadata[clone] = OptionMeta({
+            optionAddress: clone,
+            isCall: false,
+            underlyingToken: _underlyingToken,
+            strikeToken: _strikeToken,
+            underlyingSymbol: _underlyingSymbol,
+            strikeSymbol: _strikeSymbol,
+            strikePrice: _strikePrice,
+            optionSize: _optionSize,
+            premium: _premium,
+            expiry: 0,
+            priceAtExpiry: 0,
+            exercisedAmount: 0,
+            isExercised: false,
+            isResolved: false,
+            long: address(0),
+            short: msg.sender
+        });
 
         emit OptionCreated(msg.sender, clone, "PUT");
     }
@@ -117,94 +173,99 @@ contract OptionsBook {
     function enterAndPayPremium(address optionAddress) external {
         require(isKnownOption(optionAddress), "Unknown option");
 
-        (bool success1, bytes memory data1) = optionAddress.call(abi.encodeWithSignature("premium()"));
-        require(success1, "Failed to get premium");
-        uint256 premium = abi.decode(data1, (uint256));
-
-        (bool success2, bytes memory data2) = optionAddress.call(abi.encodeWithSignature("strikeToken()"));
-        require(success2, "Failed to get strike token");
-        address strikeToken = abi.decode(data2, (address));
-
-        (bool success3, bytes memory data3) = optionAddress.call(abi.encodeWithSignature("short()"));
-        require(success3, "Failed to get short address");
-        address short = abi.decode(data3, (address));
+        OptionMeta storage meta = optionMetadata[optionAddress];
+        require(meta.long == address(0), "Already entered");
 
         require(
-            IERC20(strikeToken).transferFrom(msg.sender, address(this), premium),
-            "Premium transfer to OptionsBook failed"
+            IERC20(meta.strikeToken).transferFrom(msg.sender, address(this), meta.premium),
+            "Premium transfer failed"
         );
-
         require(
-            IERC20(strikeToken).transfer(short, premium),
-            "Premium transfer to short failed"
+            IERC20(meta.strikeToken).transfer(meta.short, meta.premium),
+            "Premium payout failed"
         );
 
-        (bool success4, ) = optionAddress.call(
+        meta.long = msg.sender;
+        meta.expiry = block.timestamp + 5 minutes;
+
+        (bool success, ) = optionAddress.call(
             abi.encodeWithSignature("enterAsLong(address)", msg.sender)
         );
-        require(success4, "enterAsLong failed");
+        require(success, "enterAsLong failed");
     }
 
-    function resolveAndExercise(address optionAddress, uint256 mtkAmount) external {
+    function resolveAndExercise(address optionAddress, uint256 amountIn) external {
         require(isKnownOption(optionAddress), "Unknown option");
 
-        // Fetch and verify long address
-        (bool success, bytes memory data) = optionAddress.call(abi.encodeWithSignature("long()"));
-        require(success, "Failed to get long address");
-        address actualLong = abi.decode(data, (address));
-        require(msg.sender == actualLong, "Not authorized: only long");
+        OptionMeta storage meta = optionMetadata[optionAddress];
+        require(msg.sender == meta.long, "Not authorized");
 
-        // Check if resolution is needed
-        (success, data) = optionAddress.call(abi.encodeWithSignature("isResolved()"));
-        require(success, "isResolved() call failed");
-        if (!abi.decode(data, (bool))) {
-            (success, ) = optionAddress.call(abi.encodeWithSignature("resolve()"));
+        if (!meta.isResolved) {
+            (bool success, ) = optionAddress.call(abi.encodeWithSignature("resolve()"));
             require(success, "resolve() failed");
+
+            (bool ok, bytes memory data) = optionAddress.call(abi.encodeWithSignature("priceAtExpiry()"));
+            require(ok, "priceAtExpiry() failed");
+            meta.priceAtExpiry = abi.decode(data, (uint256));
+            meta.isResolved = true;
         }
 
-        // Get strike token for transfers
-        (success, data) = optionAddress.call(abi.encodeWithSignature("strikeToken()"));
-        require(success, "Failed to get strike token");
-        IERC20 strikeTokenContract = IERC20(abi.decode(data, (address)));
-        
-        // Get short address for transfers
-        (success, data) = optionAddress.call(abi.encodeWithSignature("short()"));
-        require(success, "Failed to get short address");
-        address short = abi.decode(data, (address));
-        
-        // Handle token transfers
-        require(strikeTokenContract.transferFrom(msg.sender, address(this), mtkAmount), "MTK transfer to OptionsBook failed");
-        require(strikeTokenContract.transfer(short, mtkAmount), "MTK transfer to short failed");
-        
-        // Exercise with zero amount since payment already handled
-        (success, ) = optionAddress.call(abi.encodeWithSignature("exercise(uint256,address)", 0, actualLong));
-        require(success, "exercise() failed");
+        if (meta.isCall) {
+            // CALL: long sends MTK (strikeToken) to buy 2TK (underlyingToken)
+            require(
+                IERC20(meta.strikeToken).transferFrom(msg.sender, address(this), amountIn),
+                "CALL: MTK transfer failed"
+            );
+            require(
+                IERC20(meta.strikeToken).transfer(meta.short, amountIn),
+                "CALL: MTK forward to short failed"
+            );
+        } else {
+            // PUT: long sends 2TK (underlyingToken) to sell for MTK (strikeToken)
+            // For puts: amountIn represents the amount of 2TK tokens to sell
+            require(
+                IERC20(meta.underlyingToken).transferFrom(msg.sender, optionAddress, amountIn),
+                "PUT: 2TK transfer to option failed"
+            );
+        }
+
+        // Call exercise() on the option contract
+        (bool success2, ) = optionAddress.call(
+            abi.encodeWithSignature("exercise(uint256,address)", 0, meta.long)
+        );
+        require(success2, "exercise() failed");
     }
+
 
     function resolveAndReclaim(address optionAddress) external {
         require(isKnownOption(optionAddress), "Unknown option");
-        require(msg.sender == shortPosition[optionAddress], "Not authorized: only short");
+        require(msg.sender == shortPosition[optionAddress], "Not authorized");
 
-        // Check if option is already resolved before calling resolve()
-        (bool success, bytes memory data) = optionAddress.call(abi.encodeWithSignature("isResolved()"));
-        require(success, "isResolved() call failed");
-        bool alreadyResolved = abi.decode(data, (bool));
-        
-        if (!alreadyResolved) {
-            (bool resolved, ) = optionAddress.call(abi.encodeWithSignature("resolve()"));
-            require(resolved, "resolve() failed");
+        OptionMeta storage meta = optionMetadata[optionAddress];
+
+        if (!meta.isResolved) {
+            (bool success, ) = optionAddress.call(abi.encodeWithSignature("resolve()"));
+            require(success, "resolve() failed");
+
+            (bool ok, bytes memory data) = optionAddress.call(abi.encodeWithSignature("priceAtExpiry()"));
+            require(ok, "priceAtExpiry() failed");
+            meta.priceAtExpiry = abi.decode(data, (uint256));
+            meta.isResolved = true;
         }
 
-        (bool reclaimed, ) = optionAddress.call(abi.encodeWithSignature("reclaim(address)", msg.sender));
-        require(reclaimed, "reclaim() failed");
+        (bool success2, ) = optionAddress.call(abi.encodeWithSignature("reclaim(address)", msg.sender));
+        require(success2, "reclaim() failed");
     }
 
     function notifyExercised(uint256 strikeTokenAmount) external {
-        require(isKnownOption(msg.sender), "Unknown option contract");
+        require(isKnownOption(msg.sender), "Unknown option");
         require(!isExercised[msg.sender], "Already marked exercised");
 
         isExercised[msg.sender] = true;
         totalExercisedStrikeTokens += strikeTokenAmount;
+
+        optionMetadata[msg.sender].exercisedAmount = strikeTokenAmount;
+        optionMetadata[msg.sender].isExercised = true;
 
         emit OptionExercised(msg.sender, strikeTokenAmount);
     }
@@ -221,63 +282,20 @@ contract OptionsBook {
         return putOptions;
     }
 
-    function getExercisedCallOptions() external view returns (address[] memory exercised) {
-        uint256 count;
-        for (uint256 i = 0; i < callOptions.length; i++) {
-            if (isExercised[callOptions[i]]) count++;
-        }
-
-        exercised = new address[](count);
-        uint256 idx = 0;
-        for (uint256 i = 0; i < callOptions.length; i++) {
-            if (isExercised[callOptions[i]]) {
-                exercised[idx++] = callOptions[i];
-            }
-        }
+    function getOptionMeta(address option) external view returns (OptionMeta memory) {
+        return optionMetadata[option];
     }
 
-    function getUnexercisedCallOptions() external view returns (address[] memory unexercised) {
-        uint256 count;
+    function getAllOptionMetadata() external view returns (OptionMeta[] memory allMeta) {
+        uint256 total = callOptions.length + putOptions.length;
+        allMeta = new OptionMeta[](total);
+        uint256 idx = 0;
+
         for (uint256 i = 0; i < callOptions.length; i++) {
-            if (!isExercised[callOptions[i]]) count++;
+            allMeta[idx++] = optionMetadata[callOptions[i]];
         }
-
-        unexercised = new address[](count);
-        uint256 idx = 0;
-        for (uint256 i = 0; i < callOptions.length; i++) {
-            if (!isExercised[callOptions[i]]) {
-                unexercised[idx++] = callOptions[i];
-            }
-        }
-    }
-
-    function getExercisedPutOptions() external view returns (address[] memory exercised) {
-        uint256 count;
         for (uint256 i = 0; i < putOptions.length; i++) {
-            if (isExercised[putOptions[i]]) count++;
-        }
-
-        exercised = new address[](count);
-        uint256 idx = 0;
-        for (uint256 i = 0; i < putOptions.length; i++) {
-            if (isExercised[putOptions[i]]) {
-                exercised[idx++] = putOptions[i];
-            }
-        }
-    }
-
-    function getUnexercisedPutOptions() external view returns (address[] memory unexercised) {
-        uint256 count;
-        for (uint256 i = 0; i < putOptions.length; i++) {
-            if (!isExercised[putOptions[i]]) count++;
-        }
-
-        unexercised = new address[](count);
-        uint256 idx = 0;
-        for (uint256 i = 0; i < putOptions.length; i++) {
-            if (!isExercised[putOptions[i]]) {
-                unexercised[idx++] = putOptions[i];
-            }
+            allMeta[idx++] = optionMetadata[putOptions[i]];
         }
     }
 }

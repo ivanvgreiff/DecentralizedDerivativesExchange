@@ -104,7 +104,7 @@ contract PutOptionContract {
         emit PriceResolved(underlyingSymbol, strikeSymbol, price, block.timestamp);
     }
 
-    function exercise(uint256 twoTkAmount, address realLong) external {
+    function exercise(uint256 mtkAmount, address realLong) external {
         require(msg.sender == optionsBook, "Only OptionsBook can exercise");
         require(block.timestamp >= expiry, "Too early");
         require(!isExercised, "Already exercised");
@@ -112,21 +112,31 @@ contract PutOptionContract {
         require(realLong == long, "Not authorized long");
 
         require(priceAtExpiry < strikePrice, "Not profitable");
-        require(twoTkAmount > 0, "Zero spend");
 
-        uint256 mtkAmount = (twoTkAmount * strikePrice) / 1e18;
-        require(mtkAmount <= optionSize, "Too much");
+        uint256 twoTkAmount;
+        uint256 actualStrikePayout;
+
+        if (mtkAmount > 0) {
+            // direct mode — not used in this flow
+            actualStrikePayout = mtkAmount;
+            twoTkAmount = (mtkAmount * 1e18) / strikePrice;
+            require(twoTkAmount <= optionSize, "Too much");
+
+            require(underlyingToken.transferFrom(realLong, address(this), twoTkAmount), "2TK fail");
+        } else {
+            // OptionsBook mode: already received 2TK from long
+            twoTkAmount = optionSize;
+            actualStrikePayout = (twoTkAmount * strikePrice) / 1e18;
+        }
 
         isExercised = true;
+        require(strikeToken.transfer(realLong, actualStrikePayout), "MTK payout fail");
 
-        require(underlyingToken.transferFrom(realLong, address(this), twoTkAmount), "2TK fail");
-        require(underlyingToken.transfer(short, twoTkAmount), "2TK fwd fail");
-        require(strikeToken.transfer(realLong, mtkAmount), "MTK fail");
+        OptionsBook(optionsBook).notifyExercised(actualStrikePayout);
 
-        OptionsBook(optionsBook).notifyExercised(mtkAmount);
-
-        emit OptionExercised(realLong, twoTkAmount, mtkAmount);
+        emit OptionExercised(realLong, mtkAmount, twoTkAmount);
     }
+
 
     function reclaim(address realShort) external {
         require(msg.sender == optionsBook, "Only OptionsBook can reclaim");
