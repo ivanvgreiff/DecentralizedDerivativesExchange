@@ -106,12 +106,12 @@ async function initializeBlockchain() {
 }
 
 // Contract ABIs (you'll need to import these from your compiled contracts)
-const CallOptionContractABI = require('../contract-utils/CallOptionContractABI.json');
-const PutOptionContractABI = require('../contract-utils/PutOptionContractABI.json');
-const OptionsBookABI = require('../contract-utils/OptionsBookABI.json');
-const SimuOracleABI = require('../contract-utils/SimuOracleABI.json');
-const MTKABI = require('../contract-utils/MTKContractABI.json');
-const TwoTKABI = require('../contract-utils/TwoTKContractABI.json');
+const CallOptionContractABI = require('../utils/CallOptionContractABI.json');
+const PutOptionContractABI = require('../utils/PutOptionContractABI.json');
+const OptionsBookABI = require('../utils/OptionsBookABI.json');
+const SimuOracleABI = require('../utils/SimuOracleABI.json');
+const MTKABI = require('../utils/MTKContractABI.json');
+const TwoTKABI = require('../utils/TwoTKContractABI.json');
 
 // Utility function to add delay
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));

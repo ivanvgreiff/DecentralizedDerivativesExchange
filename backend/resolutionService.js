@@ -159,7 +159,7 @@ class ResolutionService {
       console.log(`🔄 Resolving contract: ${contractAddress}`);
       
       // Load contract ABI
-      const OptionContractABI = require('../contract-utils/OptionContractABI.json');
+      const OptionContractABI = require('../utils/OptionContractABI.json');
       const optionContract = new ethers.Contract(contractAddress, OptionContractABI, this.signer);
       
       // Double-check contract state before resolving
