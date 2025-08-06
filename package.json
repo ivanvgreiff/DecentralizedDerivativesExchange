@@ -1,0 +1,25 @@
+{
+  "name": "ddx-protocol",
+  "version": "1.0.0",
+  "description": "Decentralized Derivatives Exchange Protocol",
+  "scripts": {
+    "install-all": "npm install && cd backend && npm install && cd ../frontend && npm install && cd ..",
+    "dev": "concurrently \"cd backend && npm run dev\" \"cd frontend && npm start\"",
+    "start": "concurrently \"cd backend && npm start\" \"cd frontend && npm run build && serve -s frontend/build\"",
+    "backend": "cd backend && npm run dev",
+    "frontend": "cd frontend && npm start",
+    "build": "cd frontend && npm run build",
+    "test": "cd backend && npm test && cd ../frontend && npm test"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.1",
+    "ethers": "^6.15.0"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "serve": "^14.2.1"
+  },
+  "keywords": ["blockchain", "defi", "options", "derivatives", "ethereum"],
+  "author": "DDX Protocol",
+  "license": "MIT"
+}

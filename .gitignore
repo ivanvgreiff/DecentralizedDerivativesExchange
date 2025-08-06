@@ -1,23 +1,49 @@
-.gitignore
-.gitmodules
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Environment variables (NEVER commit real credentials)
 .env
-.claude
-foundry.toml
-package-lock.json
-package.json
-flattened_*.sol
-node_modules
+.env.local
+.env.production
+
+# Database
+backend/contracts.db
+backend/contracts.db-*
+
+# Build outputs
+frontend/build/
+out/
+cache/
 broadcast/
 
-# Compiler files
+# Logs
+*.log
+logs/
+
+# Flattened contracts (generated)
+flattened_*.sol
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Foundry/Forge
 cache/
 out/
-
-# Docs
-docs/
-src/
 lib/
-.github/
 
-# Dotenv file
-.env
+# Claude AI assistant files
+.claude
