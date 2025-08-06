@@ -2,10 +2,13 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@prb/math/src/UD60x18.sol";
+import { ud } from "@prb/math/src/ud60x18/Casting.sol";
 import "./SimuOracle.sol";
 import "./OptionsBook.sol";
 
-contract LogarithmicCallOption {
+contract LogarithmicPutOption {
+
     address public short;
     address public long;
     address public optionsBook;
@@ -19,7 +22,7 @@ contract LogarithmicCallOption {
     uint256 public strikePrice;
     uint256 public optionSize;
     uint256 public premium;
-    uint256 public intensity; // LOG SCALING FACTOR
+    uint256 public intensity;
 
     uint256 public expiry;
     bool public isActive;
@@ -32,12 +35,10 @@ contract LogarithmicCallOption {
 
     bool private initialized;
 
-    string public constant optionType = "LOG_CALL";
-
     event OptionCreated(address indexed short);
     event OptionActivated(address indexed long, uint256 premium, uint256 expiry);
-    event OptionExercised(address indexed long, uint256 mtkSpent, uint256 twoTkReceived);
-    event PriceResolved(string pair, uint256 price);
+    event OptionExercised(address indexed long, uint256 twoTkSpent, uint256 mtkReceived);
+    event PriceResolved(uint256 price);
 
     modifier onlyOptionsBook() {
         require(msg.sender == optionsBook, "Not OptionsBook");
@@ -89,59 +90,59 @@ contract LogarithmicCallOption {
     }
 
     function resolve() public {
-        require(block.timestamp >= expiry && !isResolved, "Too early or already resolved");
+        require(block.timestamp >= expiry && !isResolved, "Too early or resolved");
         priceAtExpiry = oracle.getDerivedPriceBySymbols(underlyingSymbol, strikeSymbol);
         require(priceAtExpiry > 0, "Invalid oracle price");
         isResolved = true;
-        emit PriceResolved(string(abi.encodePacked(underlyingSymbol, "/", strikeSymbol)), priceAtExpiry);
+        emit PriceResolved(priceAtExpiry);
     }
 
-    function exercise(uint256 mtkAmount, address _long) external onlyOptionsBook {
+    function exercise(uint256 amount2TK, address _long) external onlyOptionsBook {
         require(block.timestamp >= expiry && isResolved && !isExercised, "Invalid exercise");
         require(_long == long, "Not long");
 
-        uint256 minPrice = strikePrice + (1e18 / intensity);
-        require(priceAtExpiry >= minPrice, "Out of money");
+        uint256 threshold = strikePrice - (1e18 / intensity);
+        require(priceAtExpiry <= threshold, "Out of the money");
 
-        uint256 logNumerator = intensity * (priceAtExpiry - strikePrice);
-        require(logNumerator > 1e18, "Below log domain");
+        uint256 logArg = intensity * (strikePrice - priceAtExpiry);
+        UD60x18 logArgUD = ud(logArg);
+        UD60x18 lnValUD = logArgUD.ln();
+        uint256 lnVal = lnValUD.unwrap();
 
-        // Approximate log (natural) using fixed-point
-        uint256 payout = approximateLog(logNumerator); // result in 1e18 scaling
-        uint256 twoTkPayout = (payout * optionSize) / 1e18;
-
-        if (twoTkPayout > optionSize) {
-            twoTkPayout = optionSize;
+        uint256 mtkPayout = (lnVal * optionSize) / 1e18;
+        
+        // Always use OptionsBook calculation mode for consistent logarithmic behavior
+        uint256 actualAmount2TK;
+        uint256 availableCollateral = strikeToken.balanceOf(address(this));
+        if (mtkPayout > availableCollateral) {
+            mtkPayout = availableCollateral;
+            // Full exercise at maximum available collateral
+            actualAmount2TK = optionSize;
+        } else {
+            // Calculate linear profit that would produce this logarithmic payout
+            uint256 priceDiff = strikePrice - priceAtExpiry;
+            uint256 linearProfit = (optionSize * priceDiff) / 1e18;
+            
+            if (linearProfit > 0 && mtkPayout < linearProfit) {
+                // If logarithmic payout is less than linear, pay proportionally less 2TK
+                actualAmount2TK = (optionSize * mtkPayout) / linearProfit;
+            } else {
+                // If logarithmic payout exceeds linear, still pay full option size
+                actualAmount2TK = optionSize;
+            }
         }
 
-        require(strikeToken.transferFrom(_long, short, mtkAmount), "MTK transfer failed");
-        require(underlyingToken.transfer(_long, twoTkPayout), "2TK transfer failed");
+        require(strikeToken.transfer(_long, mtkPayout), "MTK payout failed");
 
         isExercised = true;
-        OptionsBook(optionsBook).notifyExercised(mtkAmount);
-        emit OptionExercised(_long, mtkAmount, twoTkPayout);
+        OptionsBook(optionsBook).notifyExercised(mtkPayout);
+        emit OptionExercised(_long, actualAmount2TK, mtkPayout);
     }
 
     function reclaim(address _short) external onlyOptionsBook {
-        require(block.timestamp >= expiry && !isExercised, "Can't reclaim");
+        require(block.timestamp >= expiry && !isExercised, "Cannot reclaim");
         require(_short == short, "Not short");
         isExercised = true;
-        require(underlyingToken.transfer(_short, optionSize), "Reclaim failed");
-    }
-
-    function approximateLog(uint256 x) internal pure returns (uint256) {
-        // Rough approximation of ln(x) for x scaled by 1e18
-        // ln(x) ≈ log2(x) * ln(2)
-        require(x > 0, "Invalid log input");
-
-        uint256 log2 = mostSignificantBit(x) * 1e18 / 1; // crude log2(x)
-        return (log2 * 693147180559945309) / 1e18; // ln(2) ≈ 0.6931...
-    }
-
-    function mostSignificantBit(uint256 x) internal pure returns (uint256 msb) {
-        while (x > 1) {
-            x >>= 1;
-            msb++;
-        }
+        require(strikeToken.transfer(_short, strikeToken.balanceOf(address(this))), "Reclaim failed");
     }
 }

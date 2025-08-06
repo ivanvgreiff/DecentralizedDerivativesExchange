@@ -1023,27 +1023,30 @@ app.post('/api/option/:contractAddress/resolveAndExercise', async (req, res) => 
     
     let amountWei, tokenToApprove, approveTokenContract;
     
+    // Always use OptionsBook calculation mode for all option types
+    // This ensures consistent behavior and eliminates overspending bugs
+    amountWei = ethers.BigNumber.from(0);
+    const payoffType = optionMeta.payoffType || 'Linear';
+    
     if (contractType === 'call') {
       // CALL: User sends MTK to buy 2TK
-      amountWei = ethers.parseUnits(mtkAmount.toString(), 18);
       tokenToApprove = optionMeta.strikeToken; // MTK
       approveTokenContract = new ethers.Contract(optionMeta.strikeToken, MTKABI, provider);
-      
-      console.log('CALL - MTK amount to spend:', mtkAmount);
+      console.log(`CALL (${payoffType}) - Using OptionsBook calculation mode`);
     } else {
       // PUT: User sends 2TK to sell for MTK
-      amountWei = ethers.parseUnits(twoTkAmount.toString(), 18);
       tokenToApprove = optionMeta.underlyingToken; // 2TK
       approveTokenContract = new ethers.Contract(optionMeta.underlyingToken, TwoTKABI, provider);
-      
-      console.log('PUT - 2TK amount to sell:', twoTkAmount);
+      console.log(`PUT (${payoffType}) - Using OptionsBook calculation mode`);
     }
     
     console.log('Contract address:', contractAddress);
     console.log('Amount (wei):', amountWei.toString());
     
     // Prepare approve transaction (user needs to approve OptionsBook to spend the correct token)
-    const approveData = approveTokenContract.interface.encodeFunctionData('approve', [OPTIONSBOOK_ADDRESS, amountWei]);
+    // Since we always use OptionsBook calculation mode, approve the provided amount from frontend
+    const approveAmount = ethers.parseUnits((contractType === 'call' ? mtkAmount : twoTkAmount).toString(), 18);
+    const approveData = approveTokenContract.interface.encodeFunctionData('approve', [OPTIONSBOOK_ADDRESS, approveAmount]);
     
     // Prepare resolveAndExercise transaction (call OptionsBook)
     const resolveAndExerciseData = optionsBookContract.interface.encodeFunctionData('resolveAndExercise', [contractAddress, amountWei]);

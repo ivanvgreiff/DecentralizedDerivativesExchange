@@ -45,8 +45,15 @@ contract exerciseTest is Test {
         callImpl = new CallOptionContract();
         putImpl = new PutOptionContract();
 
-        // Deploy OptionsBook
-        optionsBook = new OptionsBook(address(callImpl), address(putImpl));
+        // Deploy OptionsBook (adding dummy addresses for quadratic and logarithmic implementations)
+        optionsBook = new OptionsBook(
+            address(callImpl), 
+            address(putImpl), 
+            address(0), // quadraticCallImpl - dummy for tests
+            address(0), // quadraticPutImpl - dummy for tests
+            address(0), // logarithmicCallImpl - dummy for tests
+            address(0)  // logarithmicPutImpl - dummy for tests
+        );
 
         vm.stopPrank();
     }
@@ -65,7 +72,8 @@ contract exerciseTest is Test {
             2e18,     // strike price: 2 MTK per 1 2TK
             100e18,   // option size: 100 2TK
             10e18,    // premium
-            address(oracle)
+            address(oracle),
+            "Linear"  // payoffType
         );
 
         vm.stopPrank();

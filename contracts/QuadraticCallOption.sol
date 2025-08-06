@@ -137,54 +137,34 @@ contract QuadraticCallOption {
 
         require(priceAtExpiry > strikePrice, "Not profitable");
         
-        uint256 twoTkAmount;
-        uint256 actualMtkAmount;
+        // Always use OptionsBook calculation mode for consistent quadratic behavior
+        // Calculate the linear profit first
+        uint256 priceDiff = priceAtExpiry - strikePrice;
+        uint256 linearProfit = (optionSize * priceDiff) / 1e18;
         
-        if (mtkAmount > 0) {
-            // Direct exercise: calculate quadratic payout based on provided mtkAmount
-            actualMtkAmount = mtkAmount;
-            
-            // For quadratic options, we need to calculate the underlying amount differently
-            // Base amount calculation using linear formula first
-            uint256 baseTwoTkAmount = (mtkAmount * 1e18) / strikePrice;
-            require(baseTwoTkAmount <= optionSize, "Too much");
-            
-            // Apply quadratic multiplier to the payout
-            twoTkAmount = calculateQuadraticPayout(baseTwoTkAmount);
-            
-            // Ensure we don't exceed available collateral
-            if (twoTkAmount > optionSize) {
-                twoTkAmount = optionSize;
-            }
-            
-            // Handle direct payment
-            require(strikeToken.transferFrom(realLong, address(this), mtkAmount), "MTK fail");
-            require(strikeToken.transfer(short, mtkAmount), "MTK fwd fail");
+        // Apply quadratic multiplier to the linear profit
+        uint256 quadraticMultiplier = (priceDiff * priceDiff) / QUADRATIC_SCALE;
+        uint256 twoTkAmount = (linearProfit * quadraticMultiplier) / 1e18;
+        
+        // Calculate corresponding MTK payment for the quadratic payout
+        uint256 actualMtkAmount;
+        if (twoTkAmount > optionSize) {
+            // If quadratic payout exceeds optionSize, cap it and reduce MTK payment proportionally
+            twoTkAmount = optionSize;
+            // Calculate what portion of the original exercise this represents
+            uint256 effectiveQuadraticAmount = (optionSize * 1e18) / quadraticMultiplier;
+            actualMtkAmount = (effectiveQuadraticAmount * strikePrice) / 1e18;
         } else {
-            // OptionsBook exercise: calculate quadratic payout properly
-            
-            // Calculate the linear profit first
-            uint256 priceDiff = priceAtExpiry - strikePrice;
-            uint256 linearProfit = (optionSize * priceDiff) / 1e18;
-            
-            // Apply quadratic multiplier to the linear profit
-            uint256 quadraticMultiplier = (priceDiff * priceDiff) / QUADRATIC_SCALE;
-            twoTkAmount = (linearProfit * quadraticMultiplier) / 1e18;
-            
-            // Ensure we don't exceed available collateral
-            if (twoTkAmount > optionSize) {
-                twoTkAmount = optionSize;
-            }
-            
-            // Calculate equivalent MTK payment based on original option terms
-            actualMtkAmount = (optionSize * strikePrice) / 1e18;
+            // Normal case: calculate MTK payment based on the linear profit needed for this quadratic payout
+            uint256 requiredLinearProfit = (twoTkAmount * 1e18) / quadraticMultiplier;
+            actualMtkAmount = (requiredLinearProfit * strikePrice) / priceDiff;
         }
 
         isExercised = true;
         require(underlyingToken.transfer(realLong, twoTkAmount), "2TK fail");
         OptionsBook(optionsBook).notifyExercised(actualMtkAmount);
 
-        emit OptionExercised(realLong, mtkAmount, twoTkAmount);
+        emit OptionExercised(realLong, actualMtkAmount, twoTkAmount);
     }
 
     function reclaim(address realShort) external {

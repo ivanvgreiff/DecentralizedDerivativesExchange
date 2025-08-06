@@ -7,12 +7,16 @@ import "./CallOptionContract.sol";
 import "./PutOptionContract.sol";
 import "./QuadraticCallOption.sol";
 import "./QuadraticPutOption.sol";
+import "./LogarithmicCallOption.sol";
+import "./LogarithmicPutOption.sol";
 
 contract OptionsBook {
     address public callImpl;
     address public putImpl;
     address public quadraticCallImpl;
     address public quadraticPutImpl;
+    address public logarithmicCallImpl;
+    address public logarithmicPutImpl;
 
     uint256 public totalExercisedStrikeTokens;
 
@@ -43,7 +47,7 @@ contract OptionsBook {
         bool isResolved;
         address long;
         address short;
-        string payoffType; // Add payoff type field
+        string payoffType;
     }
 
     mapping(address => OptionMeta) public optionMetadata;
@@ -52,15 +56,19 @@ contract OptionsBook {
     event OptionExercised(address indexed option, uint256 strikeTokenAmount);
 
     constructor(
-        address _callImpl, 
-        address _putImpl, 
-        address _quadraticCallImpl, 
-        address _quadraticPutImpl
+        address _callImpl,
+        address _putImpl,
+        address _quadraticCallImpl,
+        address _quadraticPutImpl,
+        address _logarithmicCallImpl,
+        address _logarithmicPutImpl
     ) {
         callImpl = _callImpl;
         putImpl = _putImpl;
         quadraticCallImpl = _quadraticCallImpl;
         quadraticPutImpl = _quadraticPutImpl;
+        logarithmicCallImpl = _logarithmicCallImpl;
+        logarithmicPutImpl = _logarithmicPutImpl;
     }
 
     function createAndFundCallOption(
@@ -74,7 +82,6 @@ contract OptionsBook {
         address _oracle,
         string memory _payoffType
     ) external returns (address clone) {
-        // Choose implementation based on payoff type
         if (keccak256(bytes(_payoffType)) == keccak256(bytes("Quadratic"))) {
             clone = Clones.clone(quadraticCallImpl);
             QuadraticCallOption(clone).initialize(
@@ -89,8 +96,22 @@ contract OptionsBook {
                 _oracle,
                 address(this)
             );
+        } else if (keccak256(bytes(_payoffType)) == keccak256(bytes("Logarithmic"))) {
+            clone = Clones.clone(logarithmicCallImpl);
+            LogarithmicCallOption(clone).initialize(
+                msg.sender,
+                _underlyingToken,
+                _strikeToken,
+                _underlyingSymbol,
+                _strikeSymbol,
+                _strikePrice,
+                _optionSize,
+                _premium,
+                1e18, // intensity
+                _oracle,
+                address(this)
+            );
         } else {
-            // Default to linear implementation
             clone = Clones.clone(callImpl);
             CallOptionContract(clone).initialize(
                 msg.sender,
@@ -106,14 +127,12 @@ contract OptionsBook {
             );
         }
 
-        require(
-            IERC20(_underlyingToken).transferFrom(msg.sender, clone, _optionSize),
-            "Token transfer failed"
-        );
+        require(IERC20(_underlyingToken).transferFrom(msg.sender, clone, _optionSize), "Token transfer failed");
 
-        // Call fund() using the appropriate interface
         if (keccak256(bytes(_payoffType)) == keccak256(bytes("Quadratic"))) {
             QuadraticCallOption(clone).fund();
+        } else if (keccak256(bytes(_payoffType)) == keccak256(bytes("Logarithmic"))) {
+            LogarithmicCallOption(clone).fund();
         } else {
             CallOptionContract(clone).fund();
         }
@@ -157,7 +176,6 @@ contract OptionsBook {
         address _oracle,
         string memory _payoffType
     ) external returns (address clone) {
-        // Choose implementation based on payoff type
         if (keccak256(bytes(_payoffType)) == keccak256(bytes("Quadratic"))) {
             clone = Clones.clone(quadraticPutImpl);
             QuadraticPutOption(clone).initialize(
@@ -172,8 +190,22 @@ contract OptionsBook {
                 _oracle,
                 address(this)
             );
+        } else if (keccak256(bytes(_payoffType)) == keccak256(bytes("Logarithmic"))) {
+            clone = Clones.clone(logarithmicPutImpl);
+            LogarithmicPutOption(clone).initialize(
+                msg.sender,
+                _underlyingToken,
+                _strikeToken,
+                _underlyingSymbol,
+                _strikeSymbol,
+                _strikePrice,
+                _optionSize,
+                _premium,
+                1e18,
+                _oracle,
+                address(this)
+            );
         } else {
-            // Default to linear implementation
             clone = Clones.clone(putImpl);
             PutOptionContract(clone).initialize(
                 msg.sender,
@@ -190,14 +222,12 @@ contract OptionsBook {
         }
 
         uint256 mtkToSend = (_optionSize * _strikePrice) / 1e18;
-        require(
-            IERC20(_strikeToken).transferFrom(msg.sender, clone, mtkToSend),
-            "Strike token transfer failed"
-        );
+        require(IERC20(_strikeToken).transferFrom(msg.sender, clone, mtkToSend), "Strike token transfer failed");
 
-        // Call fund() using the appropriate interface
         if (keccak256(bytes(_payoffType)) == keccak256(bytes("Quadratic"))) {
             QuadraticPutOption(clone).fund();
+        } else if (keccak256(bytes(_payoffType)) == keccak256(bytes("Logarithmic"))) {
+            LogarithmicPutOption(clone).fund();
         } else {
             PutOptionContract(clone).fund();
         }

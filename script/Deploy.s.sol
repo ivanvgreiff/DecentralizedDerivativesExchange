@@ -6,6 +6,8 @@ import "../contracts/CallOptionContract.sol";
 import "../contracts/PutOptionContract.sol";
 import "../contracts/QuadraticCallOption.sol";
 import "../contracts/QuadraticPutOption.sol";
+import "../contracts/LogarithmicCallOption.sol";
+import "../contracts/LogarithmicPutOption.sol";
 import "../contracts/OptionsBook.sol";
 
 contract DeployOptionContract is Script {
@@ -25,12 +27,18 @@ contract DeployOptionContract is Script {
         QuadraticCallOption quadraticCallImpl = new QuadraticCallOption();
         QuadraticPutOption quadraticPutImpl = new QuadraticPutOption();
 
+        // Deploy Logarithmic Option implementations (new)
+        LogarithmicCallOption logarithmicCallImpl = new LogarithmicCallOption();
+        LogarithmicPutOption logarithmicPutImpl = new LogarithmicPutOption();
+
         // Deploy the OptionsBook factory with all implementations
         OptionsBook book = new OptionsBook(
             address(callImpl),
             address(putImpl),
             address(quadraticCallImpl),
-            address(quadraticPutImpl)
+            address(quadraticPutImpl),
+            address(logarithmicCallImpl),
+            address(logarithmicPutImpl)
         );
 
         vm.stopBroadcast();
@@ -39,6 +47,8 @@ contract DeployOptionContract is Script {
         console.log("PutOptionContract Impl:      ", address(putImpl));
         console.log("QuadraticCallOption Impl:    ", address(quadraticCallImpl));
         console.log("QuadraticPutOption Impl:     ", address(quadraticPutImpl));
+        console.log("LogarithmicCallOption Impl:  ", address(logarithmicCallImpl));
+        console.log("LogarithmicPutOption Impl:   ", address(logarithmicPutImpl));
         console.log("OptionsBook Factory:         ", address(book));
     }
 }

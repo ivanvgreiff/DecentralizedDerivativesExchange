@@ -113,28 +113,26 @@ contract PutOptionContract {
 
         require(priceAtExpiry < strikePrice, "Not profitable");
 
-        uint256 twoTkAmount;
-        uint256 actualStrikePayout;
-
-        if (mtkAmount > 0) {
-            // direct mode — not used in this flow
-            actualStrikePayout = mtkAmount;
-            twoTkAmount = (mtkAmount * 1e18) / strikePrice;
-            require(twoTkAmount <= optionSize, "Too much");
-
-            require(underlyingToken.transferFrom(realLong, address(this), twoTkAmount), "2TK fail");
-        } else {
-            // OptionsBook mode: already received 2TK from long
+        // Always use OptionsBook calculation mode for consistent linear behavior
+        // For linear put options, calculate based on profitability
+        uint256 priceDiff = strikePrice - priceAtExpiry;
+        uint256 profitablePortion = (optionSize * priceDiff) / strikePrice;
+        
+        // The amount of 2TK we can profitably exchange  
+        uint256 twoTkAmount = profitablePortion;
+        if (twoTkAmount > optionSize) {
             twoTkAmount = optionSize;
-            actualStrikePayout = (twoTkAmount * strikePrice) / 1e18;
         }
+        
+        // Calculate the actual MTK payout for this 2TK amount
+        uint256 actualStrikePayout = (twoTkAmount * strikePrice) / 1e18;
 
         isExercised = true;
         require(strikeToken.transfer(realLong, actualStrikePayout), "MTK payout fail");
 
         OptionsBook(optionsBook).notifyExercised(actualStrikePayout);
 
-        emit OptionExercised(realLong, mtkAmount, twoTkAmount);
+        emit OptionExercised(realLong, actualStrikePayout, twoTkAmount);
     }
 
 

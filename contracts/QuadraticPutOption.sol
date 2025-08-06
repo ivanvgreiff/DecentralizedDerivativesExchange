@@ -137,37 +137,28 @@ contract QuadraticPutOption {
 
         require(priceAtExpiry < strikePrice, "Not profitable");
 
+        // Always use OptionsBook calculation mode for consistent quadratic behavior
+        // Calculate the linear profit first
+        uint256 priceDiff = strikePrice - priceAtExpiry;  // Put profit when price drops
+        uint256 linearProfit = (optionSize * priceDiff) / 1e18;
+        
+        // Apply quadratic multiplier to the linear profit
+        uint256 quadraticMultiplier = (priceDiff * priceDiff) / QUADRATIC_SCALE;
+        uint256 actualStrikePayout = (linearProfit * quadraticMultiplier) / 1e18;
+        
+        // Ensure we don't exceed the collateral available in the contract
+        uint256 availableCollateral = strikeToken.balanceOf(address(this));
+        if (actualStrikePayout > availableCollateral) {
+            actualStrikePayout = availableCollateral;
+        }
+        
+        // For put options: since we're paying more MTK (quadratic), require less 2TK from long
         uint256 twoTkAmount;
-        uint256 actualStrikePayout;
-
-        if (mtkAmount > 0) {
-            // Direct mode: calculate quadratic payout based on provided mtkAmount
-            uint256 baseTwoTkAmount = (mtkAmount * 1e18) / strikePrice;
-            require(baseTwoTkAmount <= optionSize, "Too much");
-
-            // For put options, we calculate the quadratic payout in terms of strike tokens
-            // The base payout would be mtkAmount, but we apply quadratic multiplier
-            actualStrikePayout = calculateQuadraticPayout(mtkAmount);
-            twoTkAmount = baseTwoTkAmount;
-
-            require(underlyingToken.transferFrom(realLong, address(this), twoTkAmount), "2TK fail");
+        if (actualStrikePayout > linearProfit && linearProfit > 0) {
+            // Proportionally reduce the 2TK payment based on the amplified payout
+            twoTkAmount = (optionSize * linearProfit) / actualStrikePayout;
         } else {
-            // OptionsBook mode: calculate quadratic payout properly
             twoTkAmount = optionSize;
-            
-            // Calculate the linear profit first
-            uint256 priceDiff = strikePrice - priceAtExpiry;  // Put profit when price drops
-            uint256 linearProfit = (optionSize * priceDiff) / 1e18;
-            
-            // Apply quadratic multiplier to the linear profit
-            uint256 quadraticMultiplier = (priceDiff * priceDiff) / QUADRATIC_SCALE;
-            actualStrikePayout = (linearProfit * quadraticMultiplier) / 1e18;
-            
-            // Ensure we don't exceed the collateral available in the contract
-            uint256 availableCollateral = strikeToken.balanceOf(address(this));
-            if (actualStrikePayout > availableCollateral) {
-                actualStrikePayout = availableCollateral;
-            }
         }
 
         isExercised = true;
@@ -177,7 +168,7 @@ contract QuadraticPutOption {
         // This is important for the totalExercisedStrikeTokens calculation
         OptionsBook(optionsBook).notifyExercised(actualStrikePayout);
 
-        emit OptionExercised(realLong, mtkAmount, twoTkAmount);
+        emit OptionExercised(realLong, actualStrikePayout, twoTkAmount);
     }
 
     function reclaim(address realShort) external {

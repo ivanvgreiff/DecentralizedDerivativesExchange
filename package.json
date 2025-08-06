@@ -12,6 +12,7 @@
     "test": "cd backend && npm test && cd ../frontend && npm test"
   },
   "dependencies": {
+    "@prb/math": "^4.1.0",
     "dotenv": "^17.2.1",
     "ethers": "^6.15.0"
   },
@@ -19,7 +20,13 @@
     "concurrently": "^8.2.2",
     "serve": "^14.2.1"
   },
-  "keywords": ["blockchain", "defi", "options", "derivatives", "ethereum"],
+  "keywords": [
+    "blockchain",
+    "defi",
+    "options",
+    "derivatives",
+    "ethereum"
+  ],
   "author": "DDX Protocol",
   "license": "MIT"
 }

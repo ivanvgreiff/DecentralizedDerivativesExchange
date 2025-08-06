@@ -112,29 +112,25 @@ contract CallOptionContract {
 
         require(priceAtExpiry > strikePrice, "Not profitable");
         
-        uint256 twoTkAmount;
-        uint256 actualMtkAmount;
+        // Always use OptionsBook calculation mode for consistent linear behavior
+        // For linear call options, calculate based on profitability
+        uint256 priceDiff = priceAtExpiry - strikePrice;
+        uint256 profitablePortion = (optionSize * priceDiff) / (priceAtExpiry);
         
-        if (mtkAmount > 0) {
-            // Direct exercise: calculate twoTkAmount from provided mtkAmount
-            actualMtkAmount = mtkAmount;
-            twoTkAmount = (mtkAmount * 1e18) / strikePrice;
-            require(twoTkAmount <= optionSize, "Too much");
-            
-            // Handle direct payment
-            require(strikeToken.transferFrom(realLong, address(this), mtkAmount), "MTK fail");
-            require(strikeToken.transfer(short, mtkAmount), "MTK fwd fail");
-        } else {
-            // OptionsBook exercise: use maximum possible amount (OptionsBook already handled payment)
-            twoTkAmount = optionSize; // Use full option size
-            actualMtkAmount = (twoTkAmount * strikePrice) / 1e18; // Calculate equivalent MTK
+        // The amount of 2TK we can profitably exchange
+        uint256 twoTkAmount = profitablePortion;
+        if (twoTkAmount > optionSize) {
+            twoTkAmount = optionSize;
         }
+        
+        // Calculate the actual MTK payment required for this 2TK amount
+        uint256 actualMtkAmount = (twoTkAmount * strikePrice) / 1e18;
 
         isExercised = true;
         require(underlyingToken.transfer(realLong, twoTkAmount), "2TK fail");
         OptionsBook(optionsBook).notifyExercised(actualMtkAmount);
 
-        emit OptionExercised(realLong, mtkAmount, twoTkAmount);
+        emit OptionExercised(realLong, actualMtkAmount, twoTkAmount);
     }
 
     function reclaim(address realShort) external {
