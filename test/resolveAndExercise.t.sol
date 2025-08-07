@@ -87,12 +87,13 @@ contract exerciseTest is Test {
         // Fast-forward past expiry
         vm.warp(block.timestamp + 6 minutes);
 
-        // Mint 100 2TK to long for exercising
+        // Mint enough 2TK to long for optimal exercising
+        // The contract will calculate and collect the optimal amount
         twoTK.mint(long, 100e18);
         twoTK.approve(address(optionsBook), 100e18);
 
-        // Exercise the PUT — should succeed
-        optionsBook.resolveAndExercise(putAddr, 100e18);
+        // Exercise the PUT using OptionsBook calculation mode (amountIn ignored)
+        optionsBook.resolveAndExercise(putAddr, 0);
 
         vm.stopPrank();
     }

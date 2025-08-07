@@ -103,7 +103,7 @@ contract CallOptionContract {
         emit PriceResolved(underlyingSymbol, strikeSymbol, price, block.timestamp);
     }
 
-    function exercise(uint256 mtkAmount, address realLong) external {
+    function exercise(uint256 /* mtkAmount */, address realLong) external {
         require(msg.sender == optionsBook, "Only OptionsBook can exercise");
         require(block.timestamp >= expiry, "Too early");
         require(!isExercised, "Already exercised");
@@ -113,18 +113,10 @@ contract CallOptionContract {
         require(priceAtExpiry > strikePrice, "Not profitable");
         
         // Always use OptionsBook calculation mode for consistent linear behavior
-        // For linear call options, calculate based on profitability
-        uint256 priceDiff = priceAtExpiry - strikePrice;
-        uint256 profitablePortion = (optionSize * priceDiff) / (priceAtExpiry);
-        
-        // The amount of 2TK we can profitably exchange
-        uint256 twoTkAmount = profitablePortion;
-        if (twoTkAmount > optionSize) {
-            twoTkAmount = optionSize;
-        }
-        
-        // Calculate the actual MTK payment required for this 2TK amount
-        uint256 actualMtkAmount = (twoTkAmount * strikePrice) / 1e18;
+        // For linear call options, exercise the full option size if profitable
+        // User pays strikePrice per unit to get 2TK worth currentPrice per unit
+        uint256 twoTkAmount = optionSize;
+        uint256 actualMtkAmount = (optionSize * strikePrice) / 1e18;
 
         isExercised = true;
         require(underlyingToken.transfer(realLong, twoTkAmount), "2TK fail");

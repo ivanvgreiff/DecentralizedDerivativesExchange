@@ -284,7 +284,7 @@ contract OptionsBook {
         require(success, "enterAsLong failed");
     }
 
-    function resolveAndExercise(address optionAddress, uint256 amountIn) external {
+    function resolveAndExercise(address optionAddress, uint256 /* amountIn */) external {
         require(isKnownOption(optionAddress), "Unknown option");
 
         OptionMeta storage meta = optionMetadata[optionAddress];
@@ -300,30 +300,17 @@ contract OptionsBook {
             meta.isResolved = true;
         }
 
-        if (meta.isCall) {
-            // CALL: long sends MTK (strikeToken) to buy 2TK (underlyingToken)
-            require(
-                IERC20(meta.strikeToken).transferFrom(msg.sender, address(this), amountIn),
-                "CALL: MTK transfer failed"
-            );
-            require(
-                IERC20(meta.strikeToken).transfer(meta.short, amountIn),
-                "CALL: MTK forward to short failed"
-            );
-        } else {
-            // PUT: long sends 2TK (underlyingToken) to sell for MTK (strikeToken)
-            // For puts: amountIn represents the amount of 2TK tokens to sell
-            require(
-                IERC20(meta.underlyingToken).transferFrom(msg.sender, optionAddress, amountIn),
-                "PUT: 2TK transfer to option failed"
-            );
-        }
-
-        // Call exercise() on the option contract
+        // Call exercise() to calculate optimal amounts and transfer underlying tokens
         (bool success2, ) = optionAddress.call(
             abi.encodeWithSignature("exercise(uint256,address)", 0, meta.long)
         );
         require(success2, "exercise() failed");
+
+        // After exercise(), the notifyExercised() callback will have been called with the optimal amount
+        // We need to handle the payment collection based on the calculated amount
+        
+        // Note: The exercise() call transfers underlying tokens to long and calculates optimal payment
+        // The payment collection is handled via notifyExercised() callback
     }
 
 
@@ -356,6 +343,31 @@ contract OptionsBook {
 
         optionMetadata[msg.sender].exercisedAmount = strikeTokenAmount;
         optionMetadata[msg.sender].isExercised = true;
+
+        // Handle payment collection for the calculated optimal amount
+        OptionMeta storage meta = optionMetadata[msg.sender];
+        
+        if (meta.isCall && strikeTokenAmount > 0) {
+            // CALL: collect calculated MTK from long, send to short
+            require(
+                IERC20(meta.strikeToken).transferFrom(meta.long, address(this), strikeTokenAmount),
+                "CALL: Optimal MTK collection failed"
+            );
+            require(
+                IERC20(meta.strikeToken).transfer(meta.short, strikeTokenAmount),
+                "CALL: MTK to short failed"
+            );
+        } else if (!meta.isCall) {
+            // PUT: collect calculated 2TK from long, contract already transferred MTK to long
+            // For linear puts: collect optionSize 2TK
+            // For non-linear puts: collect calculated optimal amount (we'll use optionSize for now)
+            uint256 twoTkToCollect = meta.optionSize;
+            
+            require(
+                IERC20(meta.underlyingToken).transferFrom(meta.long, msg.sender, twoTkToCollect),
+                "PUT: 2TK collection failed"
+            );
+        }
 
         emit OptionExercised(msg.sender, strikeTokenAmount);
     }

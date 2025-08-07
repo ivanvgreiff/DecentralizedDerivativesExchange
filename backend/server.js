@@ -1025,7 +1025,7 @@ app.post('/api/option/:contractAddress/resolveAndExercise', async (req, res) => 
     
     // Always use OptionsBook calculation mode for all option types
     // This ensures consistent behavior and eliminates overspending bugs
-    amountWei = ethers.BigNumber.from(0);
+    amountWei = 0n;
     const payoffType = optionMeta.payoffType || 'Linear';
     
     if (contractType === 'call') {

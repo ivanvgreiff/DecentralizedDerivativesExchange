@@ -128,7 +128,7 @@ contract QuadraticCallOption {
         return (amount * quadraticMultiplier) / 1e18;
     }
 
-    function exercise(uint256 mtkAmount, address realLong) external {
+    function exercise(uint256 /* mtkAmount */, address realLong) external {
         require(msg.sender == optionsBook, "Only OptionsBook can exercise");
         require(block.timestamp >= expiry, "Too early");
         require(!isExercised, "Already exercised");
@@ -157,7 +157,13 @@ contract QuadraticCallOption {
         } else {
             // Normal case: calculate MTK payment based on the linear profit needed for this quadratic payout
             uint256 requiredLinearProfit = (twoTkAmount * 1e18) / quadraticMultiplier;
-            actualMtkAmount = (requiredLinearProfit * strikePrice) / priceDiff;
+            
+            // Prevent division by zero when price equals strike
+            if (priceDiff == 0) {
+                actualMtkAmount = 0; // No payment needed if no price difference
+            } else {
+                actualMtkAmount = (requiredLinearProfit * strikePrice) / priceDiff;
+            }
         }
 
         isExercised = true;

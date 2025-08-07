@@ -128,7 +128,7 @@ contract QuadraticPutOption {
         return (amount * quadraticMultiplier) / 1e18;
     }
 
-    function exercise(uint256 mtkAmount, address realLong) external {
+    function exercise(uint256 /* mtkAmount */, address realLong) external {
         require(msg.sender == optionsBook, "Only OptionsBook can exercise");
         require(block.timestamp >= expiry, "Too early");
         require(!isExercised, "Already exercised");
@@ -154,7 +154,7 @@ contract QuadraticPutOption {
         
         // For put options: since we're paying more MTK (quadratic), require less 2TK from long
         uint256 twoTkAmount;
-        if (actualStrikePayout > linearProfit && linearProfit > 0) {
+        if (actualStrikePayout > linearProfit && linearProfit > 0 && actualStrikePayout > 0) {
             // Proportionally reduce the 2TK payment based on the amplified payout
             twoTkAmount = (optionSize * linearProfit) / actualStrikePayout;
         } else {

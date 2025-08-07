@@ -91,11 +91,12 @@ contract LogarithmicCallOptionTest is Test {
         // ----- LONG EXERCISES THE CALL THROUGH OPTIONSBOOK -----
         vm.startPrank(long);
 
-        // Long approves MTK to be spent for exercising
-        uint256 mtkToPay = 100e18;
-        mtk.approve(address(optionsBook), mtkToPay);
+        // Long approves MTK for optimal exercising
+        // The contract will calculate and collect the optimal amount
+        uint256 mtkToApprove = 100e18;
+        mtk.approve(address(optionsBook), mtkToApprove);
 
-        optionsBook.resolveAndExercise(callOption, mtkToPay);
+        optionsBook.resolveAndExercise(callOption, 0);
 
         vm.stopPrank();
     }

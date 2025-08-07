@@ -465,7 +465,7 @@ const OptionDetail = () => {
   const { contractAddress } = useParams();
   const { account, sendTransaction } = useWallet();
   const [isLoading, setIsLoading] = useState(false);
-  const [exerciseAmount, setExerciseAmount] = useState('');
+  // No longer need user input for exercise amount - contracts calculate optimal amounts automatically
   const [showExerciseInput, setShowExerciseInput] = useState(false);
   const [livePrices, setLivePrices] = useState({});
   const [priceLoading, setPriceLoading] = useState(false);
@@ -745,19 +745,14 @@ const OptionDetail = () => {
 
   // Auto-set maximum amount when data loads
   React.useEffect(() => {
-    if (optionData && !exerciseAmount && showExerciseInput) {
-      const maxSpendable = calculateExerciseMetrics('1')?.maxSpendable;
-      if (maxSpendable) {
-        setExerciseAmount(maxSpendable.toFixed(2));
-      }
-    }
-  }, [optionData, showExerciseInput, exerciseAmount]);
+    // No longer need to set exercise amounts - contracts handle automatically
+  }, [optionData, showExerciseInput]);
 
-  // Calculate exercise metrics after optionData is available (contract prices)
-  const exerciseMetrics = calculateExerciseMetrics(exerciseAmount, false);
+  // Calculate exercise metrics using optimal amounts (contract prices)
+  const exerciseMetrics = optionData ? calculateExerciseMetrics('1', false) : null;
   
-  // Calculate live price metrics when available
-  const liveExerciseMetrics = livePrices.underlying ? calculateExerciseMetrics(exerciseAmount, true) : null;
+  // Calculate live price metrics when available (always using optimal amounts)
+  const liveExerciseMetrics = livePrices.underlying && optionData ? calculateExerciseMetrics('1', true) : null;
   
   // Calculate final P&L for exercised options (using max spendable amount)
   const finalPnL = optionData?.isExercised ? (() => {
@@ -877,17 +872,9 @@ const OptionDetail = () => {
       return;
     }
 
-    if (!exerciseAmount || exerciseAmount <= 0) {
-      toast.error('Please enter a valid exercise amount');
-      return;
-    }
-
-    if (exerciseMetrics?.exceedsLimit) {
-      toast.error(`Amount too large. Maximum spendable: ${exerciseMetrics.maxSpendable.toFixed(2)} MTK`);
-      return;
-    }
-
-    const mtkAmount = exerciseAmount;
+    // Use optimal exercise amounts automatically calculated by the contract
+    // Frontend just needs to provide reasonable values for approval
+    const mtkAmount = exerciseMetrics?.maxSpendable || optionData.optionSize;
     
     setIsLoading(true);
     try {
@@ -1377,7 +1364,7 @@ const OptionDetail = () => {
         return showExerciseInput && optionData.isActive && !optionData.isExercised && longMatchesAccount && (
         <DetailCard>
           <ExerciseInputSection>
-            <ExerciseTitle>Exercise Option</ExerciseTitle>
+            <ExerciseTitle>🤖 Automatic Optimal Exercise</ExerciseTitle>
             
             {/* Live Price Section */}
             {optionData && showExerciseInput && (
@@ -1594,73 +1581,57 @@ const OptionDetail = () => {
             )}
             
             <div>
-              {(() => {
-                const isPutOption = optionData?.optionType === 'PUT';
-                const tokenSymbol = isPutOption ? optionData?.underlyingSymbol : optionData?.strikeSymbol;
-                const actionText = isPutOption ? 'sell' : 'spend';
-                const maxAmount = exerciseMetrics?.maxSpendable?.toFixed(2) || '0';
-                
-                return (
-                  <>
-                    <label>Amount to {actionText} ({tokenSymbol}):</label>
-                    <ExerciseInput
-                      type="number"
-                      value={exerciseAmount}
-                      onChange={(e) => setExerciseAmount(e.target.value)}
-                      placeholder={`Max: ${maxAmount} ${tokenSymbol}`}
-                      className={exerciseMetrics?.exceedsLimit ? 'error' : ''}
-                      step="0.01"
-                      min="0"
-                    />
-                  </>
-                );
-              })()}
+              <label>🤖 Automatic Optimal Exercise</label>
+              <div style={{ 
+                background: 'rgba(34, 197, 94, 0.1)', 
+                border: '1px solid rgba(34, 197, 94, 0.3)',
+                borderRadius: '12px',
+                padding: '1rem',
+                marginTop: '0.5rem',
+                color: '#22c55e'
+              }}>
+                {(() => {
+                  const isPutOption = optionData?.optionType === 'PUT';
+                  const payoffType = optionData?.payoffType || 'Linear';
+                  
+                  if (isPutOption) {
+                    return `✨ ${payoffType} put option will automatically exercise full position: ${optionData?.optionSize} ${optionData?.underlyingSymbol} → optimized MTK payout`;
+                  } else {
+                    return `✨ ${payoffType} call option will automatically calculate optimal MTK payment for maximum ${optionData?.optionSize} ${optionData?.underlyingSymbol}`;
+                  }
+                })()}
+              </div>
             </div>
 
-            {exerciseMetrics && exerciseAmount && exerciseAmount !== exerciseMetrics.maxSpendable.toFixed(2) && (
+            {exerciseMetrics && (
               <ExerciseMetrics>
-                                 <MetricCard>
-                   <MetricLabel>You will receive:</MetricLabel>
-                   <MetricValue>{exerciseMetrics.twoTkAmount.toFixed(2)} {optionData.underlyingSymbol}</MetricValue>
-                 </MetricCard>
-                 
-                                   <MetricCard>
-                    <MetricLabel>Compared to Market Price:</MetricLabel>
-                    <MetricValue positive><span style={{ color: '#22c55e', fontSize: '1.1rem' }}>2x</span></MetricValue>
-                  </MetricCard>
-                 
-                 
-                 
-                 <MetricCard>
-                   <MetricLabel>Total ROI:</MetricLabel>
-                   <MetricValue positive={exerciseMetrics.roiPercent > 0} {...(exerciseMetrics.roiPercent < 0 && { negative: true })}>
-                     {exerciseMetrics.roiPercent > 0 ? '+' : ''}{exerciseMetrics.roiPercent.toFixed(2)}%
-                   </MetricValue>
-                 </MetricCard>
+                <MetricCard>
+                  <MetricLabel>Optimal Exercise Preview:</MetricLabel>
+                  <MetricValue>{exerciseMetrics.twoTkAmount.toFixed(2)} {optionData.underlyingSymbol}</MetricValue>
+                </MetricCard>
+                
+                <MetricCard>
+                  <MetricLabel>Expected Cost/Payout:</MetricLabel>
+                  <MetricValue>{exerciseMetrics.totalCost.toFixed(2)} MTK</MetricValue>
+                </MetricCard>
+                
+                <MetricCard>
+                  <MetricLabel>Expected ROI:</MetricLabel>
+                  <MetricValue positive={exerciseMetrics.roiPercent > 0} {...(exerciseMetrics.roiPercent < 0 && { negative: true })}>
+                    {exerciseMetrics.roiPercent > 0 ? '+' : ''}{exerciseMetrics.roiPercent.toFixed(2)}%
+                  </MetricValue>
+                </MetricCard>
               </ExerciseMetrics>
-            )}
-
-            {exerciseMetrics?.exceedsLimit && (
-              <div style={{ color: '#ef4444', marginBottom: '1rem' }}>
-                ⚠️ Amount exceeds maximum. Maximum spendable: {exerciseMetrics.maxSpendable.toFixed(2)} MTK
-              </div>
             )}
 
             <ExerciseButtons>
               <Button 
                 className="primary" 
                 onClick={handleExercise}
-                disabled={isLoading || !exerciseAmount || exerciseAmount <= 0 || exerciseMetrics?.exceedsLimit}
+                disabled={isLoading || !exerciseMetrics}
               >
                 <DollarSign size={16} />
-                {isLoading ? 'Exercising...' : 'Execute Exercise'}
-              </Button>
-              
-              <Button 
-                className="secondary" 
-                onClick={() => setExerciseAmount(exerciseMetrics?.maxSpendable?.toFixed(2) || '0')}
-              >
-                Use Maximum
+                {isLoading ? 'Exercising...' : 'Execute Optimal Exercise'}
               </Button>
             </ExerciseButtons>
           </ExerciseInputSection>

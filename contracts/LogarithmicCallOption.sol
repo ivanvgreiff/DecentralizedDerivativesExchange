@@ -97,10 +97,11 @@ contract LogarithmicCallOption {
         emit PriceResolved(priceAtExpiry);
     }
 
-    function exercise(uint256 mtkAmount, address _long) external onlyOptionsBook {
+    function exercise(uint256 /* mtkAmount */, address _long) external onlyOptionsBook {
         require(block.timestamp >= expiry && isResolved && !isExercised, "Invalid exercise");
         require(_long == long, "Not long");
 
+        require(intensity > 0, "Invalid intensity");
         uint256 threshold = strikePrice + (1e18 / intensity);
         require(priceAtExpiry >= threshold, "Out of the money");
 
