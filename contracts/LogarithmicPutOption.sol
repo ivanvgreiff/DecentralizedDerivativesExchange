@@ -100,38 +100,31 @@ contract LogarithmicPutOption {
     function exercise(uint256 /* amount2TK */, address _long) external onlyOptionsBook {
         require(block.timestamp >= expiry && isResolved && !isExercised, "Invalid exercise");
         require(_long == long, "Not long");
-
         require(intensity > 0, "Invalid intensity");
+
+        // Must be deep enough in the money: x <= K - 1/I
         uint256 threshold = strikePrice - (1e18 / intensity);
         require(priceAtExpiry <= threshold, "Out of the money");
 
+        // Compute log argument
         uint256 logArg = intensity * (strikePrice - priceAtExpiry);
+        require(logArg >= 1e18, "Invalid log input"); // ln must be >= 0
+
+        // Logarithmic payoff
         UD60x18 logArgUD = ud(logArg);
         UD60x18 lnValUD = logArgUD.ln();
-        uint256 lnVal = lnValUD.unwrap();
+        UD60x18 payoutUD = lnValUD.mul(ud(optionSize));
 
-        uint256 mtkPayout = (lnVal * optionSize) / 1e18;
-        
-        // Always use OptionsBook calculation mode for consistent logarithmic behavior
-        uint256 actualAmount2TK;
-        uint256 availableCollateral = strikeToken.balanceOf(address(this));
-        if (mtkPayout > availableCollateral) {
-            mtkPayout = availableCollateral;
-            // Full exercise at maximum available collateral
-            actualAmount2TK = optionSize;
-        } else {
-            // Calculate linear profit that would produce this logarithmic payout
-            uint256 priceDiff = strikePrice - priceAtExpiry;
-            uint256 linearProfit = (optionSize * priceDiff) / 1e18;
-            
-            if (linearProfit > 0 && mtkPayout < linearProfit) {
-                // If logarithmic payout is less than linear, pay proportionally less 2TK
-                actualAmount2TK = (optionSize * mtkPayout) / linearProfit;
-            } else {
-                // If logarithmic payout exceeds linear, still pay full option size
-                actualAmount2TK = optionSize;
-            }
-        }
+        uint256 mtkPayout = payoutUD.unwrap();
+
+        // Optional cap based on how much collateral is available
+        //uint256 availableCollateral = strikeToken.balanceOf(address(this));
+        //if (mtkPayout > availableCollateral) {
+        //    mtkPayout = availableCollateral;
+        //}
+
+        // Amount of 2TK the long must spend to buy `mtkPayout` MTK at strike price
+        uint256 actualAmount2TK = (mtkPayout * 1e18) / strikePrice;
 
         require(strikeToken.transfer(_long, mtkPayout), "MTK payout failed");
 

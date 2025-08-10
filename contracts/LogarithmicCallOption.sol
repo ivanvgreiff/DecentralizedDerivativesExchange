@@ -100,40 +100,28 @@ contract LogarithmicCallOption {
     function exercise(uint256 /* mtkAmount */, address _long) external onlyOptionsBook {
         require(block.timestamp >= expiry && isResolved && !isExercised, "Invalid exercise");
         require(_long == long, "Not long");
-
         require(intensity > 0, "Invalid intensity");
+
+        // Ensure log domain is valid: x >= K + 1/I
         uint256 threshold = strikePrice + (1e18 / intensity);
         require(priceAtExpiry >= threshold, "Out of the money");
 
+        // Calculate log argument: I(x - K)
         uint256 logArg = intensity * (priceAtExpiry - strikePrice);
+        require(logArg >= 1e18, "Invalid log input"); // log must be >= 1 (i.e., ln >= 0)
+
+        // Compute natural log and final payout in 2TK
         UD60x18 logArgUD = ud(logArg);
         UD60x18 lnValUD = logArgUD.ln();
-        uint256 lnVal = lnValUD.unwrap();
+        UD60x18 payoutUD = lnValUD.mul(ud(optionSize));
 
-        uint256 twoTkPayout = (lnVal * optionSize) / 1e18;
-        
-        // Always use OptionsBook calculation mode for consistent logarithmic behavior
-        uint256 actualMtkAmount;
-        if (twoTkPayout > optionSize) {
-            twoTkPayout = optionSize;
-            // Full exercise at capped payout
-            actualMtkAmount = (optionSize * strikePrice) / 1e18;
-        } else {
-            // Calculate linear profit that would produce this logarithmic payout
-            uint256 priceDiff = priceAtExpiry - strikePrice;
-            uint256 linearProfit = (optionSize * priceDiff) / 1e18;
-            
-            if (linearProfit > 0) {
-                // Calculate proportional MTK payment based on logarithmic vs linear ratio
-                actualMtkAmount = (twoTkPayout * strikePrice) / 1e18;
-                // If logarithmic payout is less than linear, pay proportionally less
-                if (twoTkPayout < linearProfit) {
-                    actualMtkAmount = (actualMtkAmount * twoTkPayout) / linearProfit;
-                }
-            } else {
-                actualMtkAmount = (optionSize * strikePrice) / 1e18;
-            }
-        }
+        uint256 twoTkPayout = payoutUD.unwrap();
+        //if (twoTkPayout > optionSize) {
+        //    twoTkPayout = optionSize; // Optional cap for sanity
+        //}
+
+        // The cost in MTK to buy `twoTkPayout` worth of 2TK at strike price
+        uint256 actualMtkAmount = (twoTkPayout * strikePrice) / 1e18;
 
         require(underlyingToken.transfer(_long, twoTkPayout), "2TK transfer failed");
 

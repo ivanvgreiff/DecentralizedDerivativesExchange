@@ -136,38 +136,23 @@ contract QuadraticCallOption {
         require(realLong == long, "Not authorized long");
 
         require(priceAtExpiry > strikePrice, "Not profitable");
-        
-        // Always use OptionsBook calculation mode for consistent quadratic behavior
-        // Calculate the linear profit first
+
         uint256 priceDiff = priceAtExpiry - strikePrice;
-        uint256 linearProfit = (optionSize * priceDiff) / 1e18;
-        
-        // Apply quadratic multiplier to the linear profit
-        uint256 quadraticMultiplier = (priceDiff * priceDiff) / QUADRATIC_SCALE;
-        uint256 twoTkAmount = (linearProfit * quadraticMultiplier) / 1e18;
-        
-        // Calculate corresponding MTK payment for the quadratic payout
-        uint256 actualMtkAmount;
+
+        // Pure quadratic payoff
+        uint256 payoutMultiplier = (priceDiff * priceDiff) / QUADRATIC_SCALE;
+        uint256 twoTkAmount = (optionSize * payoutMultiplier) / 1e18;
+
+        // Cap payout to funded amount
         if (twoTkAmount > optionSize) {
-            // If quadratic payout exceeds optionSize, cap it and reduce MTK payment proportionally
             twoTkAmount = optionSize;
-            // Calculate what portion of the original exercise this represents
-            uint256 effectiveQuadraticAmount = (optionSize * 1e18) / quadraticMultiplier;
-            actualMtkAmount = (effectiveQuadraticAmount * strikePrice) / 1e18;
-        } else {
-            // Normal case: calculate MTK payment based on the linear profit needed for this quadratic payout
-            uint256 requiredLinearProfit = (twoTkAmount * 1e18) / quadraticMultiplier;
-            
-            // Prevent division by zero when price equals strike
-            if (priceDiff == 0) {
-                actualMtkAmount = 0; // No payment needed if no price difference
-            } else {
-                actualMtkAmount = (requiredLinearProfit * strikePrice) / priceDiff;
-            }
         }
 
+        // Cost to the long in MTK is strikePrice per unit of 2TK received
+        uint256 actualMtkAmount = (twoTkAmount * strikePrice) / 1e18;
+
         isExercised = true;
-        require(underlyingToken.transfer(realLong, twoTkAmount), "2TK fail");
+        require(underlyingToken.transfer(realLong, twoTkAmount), "2TK transfer failed");
         OptionsBook(optionsBook).notifyExercised(actualMtkAmount);
 
         emit OptionExercised(realLong, actualMtkAmount, twoTkAmount);

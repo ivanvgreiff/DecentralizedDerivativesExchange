@@ -137,38 +137,25 @@ contract QuadraticPutOption {
 
         require(priceAtExpiry < strikePrice, "Not profitable");
 
-        // Always use OptionsBook calculation mode for consistent quadratic behavior
-        // Calculate the linear profit first
-        uint256 priceDiff = strikePrice - priceAtExpiry;  // Put profit when price drops
-        uint256 linearProfit = (optionSize * priceDiff) / 1e18;
-        
-        // Apply quadratic multiplier to the linear profit
-        uint256 quadraticMultiplier = (priceDiff * priceDiff) / QUADRATIC_SCALE;
-        uint256 actualStrikePayout = (linearProfit * quadraticMultiplier) / 1e18;
-        
-        // Ensure we don't exceed the collateral available in the contract
+        // Calculate pure quadratic payout
+        uint256 priceDiff = strikePrice - priceAtExpiry;
+        uint256 payoutMultiplier = (priceDiff * priceDiff) / QUADRATIC_SCALE;
+        uint256 mtkPayout = (optionSize * payoutMultiplier) / 1e18;
+
+        // Cap to collateral available
         uint256 availableCollateral = strikeToken.balanceOf(address(this));
-        if (actualStrikePayout > availableCollateral) {
-            actualStrikePayout = availableCollateral;
+        if (mtkPayout > availableCollateral) {
+            mtkPayout = availableCollateral;
         }
-        
-        // For put options: since we're paying more MTK (quadratic), require less 2TK from long
-        uint256 twoTkAmount;
-        if (actualStrikePayout > linearProfit && linearProfit > 0 && actualStrikePayout > 0) {
-            // Proportionally reduce the 2TK payment based on the amplified payout
-            twoTkAmount = (optionSize * linearProfit) / actualStrikePayout;
-        } else {
-            twoTkAmount = optionSize;
-        }
+
+        // 2TK payment is whatever amount would cover `mtkPayout` at strike price
+        uint256 twoTkAmount = (mtkPayout * 1e18) / strikePrice;
 
         isExercised = true;
-        require(strikeToken.transfer(realLong, actualStrikePayout), "MTK payout fail");
+        require(strikeToken.transfer(realLong, mtkPayout), "MTK payout failed");
 
-        // Note: We report the actual strike tokens paid out for volume tracking
-        // This is important for the totalExercisedStrikeTokens calculation
-        OptionsBook(optionsBook).notifyExercised(actualStrikePayout);
-
-        emit OptionExercised(realLong, actualStrikePayout, twoTkAmount);
+        OptionsBook(optionsBook).notifyExercised(mtkPayout);
+        emit OptionExercised(realLong, twoTkAmount, mtkPayout);
     }
 
     function reclaim(address realShort) external {
